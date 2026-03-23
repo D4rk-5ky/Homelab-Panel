@@ -1,0 +1,33 @@
+{
+  "mqtt": {
+    "host": "Your.IP.Or.HostName",
+    "port": 1883,
+    "user": "",
+    "pass": "",
+    "keepalive": 30
+  },
+  "client_ids": {
+    "status": "aoostar-wtr-status",
+    "command_listener": "aoostar-wtr-command-listener"
+  },
+  "topics": {
+    "control_power": "aoostar/control/power",
+    "status_power": "aoostar/status/power",
+    "status_action": "aoostar/status/action",
+    "status_hostname": "aoostar/status/hostname",
+    "status_uptime": "aoostar/status/uptime",
+    "status_last_command": "aoostar/status/last_command",
+    "status_last_result": "aoostar/status/last_result",
+    "status_last_message": "aoostar/status/last_message",
+    "status_last_updated": "aoostar/status/last_updated"
+  },
+  "timing": {
+    "publish_uptime_every": 30
+  },
+  "commands": {
+    "shutdown_delay": "shutdown_delay.sh",
+    "shutdown_cancel": "shutdown_cancel.sh",
+    "reboot_delay": "reboot_delay.sh",
+    "reboot_cancel": "reboot_cancel.sh"
+  }
+}

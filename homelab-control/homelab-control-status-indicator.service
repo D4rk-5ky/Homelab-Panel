@@ -1,0 +1,16 @@
+[Unit]
+Description=Homelab Control Status Indicator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/homelab-control-aoostar
+ExecStart=/usr/bin/python3 /opt/homelab-control-aoostar/homelab_control_status_indicator.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

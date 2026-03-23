@@ -1,0 +1,18 @@
+2026-03-20T20:09:21 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=running | message=Attempting to schedule shutdown in 1 minute
+2026-03-20T20:09:21 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=success | message=Shutdown scheduled in 1 minute
+2026-03-20T20:09:29 | command=shutdown -c | result=success | message=Shutdown/reboot cancelled
+2026-03-20T20:09:50 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=running | message=Attempting to schedule shutdown in 1 minute
+2026-03-20T20:09:50 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=success | message=Shutdown scheduled in 1 minute
+2026-03-20T20:10:05 | command=shutdown -c | result=success | message=Shutdown/reboot cancelled
+2026-03-20T20:24:14 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=running | message=Attempting to schedule shutdown in 1 minute
+2026-03-20T20:24:14 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=success | message=Shutdown scheduled in 1 minute
+2026-03-20T20:24:25 | command=shutdown -c | result=success | message=Shutdown/reboot cancelled
+2026-03-20T20:50:33 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=running | message=Attempting to schedule shutdown in 1 minute
+2026-03-20T20:50:33 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=success | message=Shutdown scheduled in 1 minute
+2026-03-20T20:50:46 | command=shutdown -c | result=success | message=Shutdown/reboot cancelled
+2026-03-21T08:37:48 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=running | message=Attempting to schedule shutdown in 1 minute
+2026-03-21T08:37:48 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=success | message=Shutdown scheduled in 1 minute
+2026-03-21T08:37:53 | command=shutdown -c | result=success | message=Shutdown/reboot cancelled
+2026-03-21T08:50:16 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=running | message=Attempting to schedule shutdown in 1 minute
+2026-03-21T08:50:16 | command=shutdown -h +1 "Shutdown requested from Homelab Control Panel" | result=success | message=Shutdown scheduled in 1 minute
+2026-03-21T08:50:25 | command=shutdown -c | result=success | message=Shutdown/reboot cancelled

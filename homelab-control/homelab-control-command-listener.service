@@ -1,0 +1,16 @@
+[Unit]
+Description=Homelab Control Command Listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/homelab-control-aoostar
+ExecStart=/usr/bin/python3 /opt/homelab-control-aoostar/homelab_control_command_listener.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
