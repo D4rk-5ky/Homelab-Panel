@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8">
+  <title>Homelab Kontrolpanel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="{{ page_refresh_seconds }}">
+
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #111827;
+      color: #f3f4f6;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .card {
+      background: #1f2937;
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 18px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.25);
+    }
+
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .wol-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 12px;
+    }
+
+    .status-box {
+      border-radius: 10px;
+      padding: 14px;
+      background: #111827;
+      border: 1px solid #374151;
+    }
+
+    .status-online {
+      border-color: #10b981;
+      box-shadow: inset 0 0 0 1px rgba(16,185,129,0.15);
+    }
+
+    .status-offline {
+      border-color: #ef4444;
+      box-shadow: inset 0 0 0 1px rgba(239,68,68,0.15);
+    }
+
+    .status-title {
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+
+    .status-main {
+      font-size: 20px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+
+    .status-line {
+      color: #d1d5db;
+      font-size: 14px;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    form {
+      margin: 0;
+    }
+
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      color: white;
+    }
+
+    button:hover {
+      filter: brightness(1.08);
+    }
+
+    .danger { background: #dc2626; }
+    .warn { background: #d97706; }
+    .ok { background: #059669; }
+
+    .muted {
+      color: #9ca3af;
+      font-size: 14px;
+    }
+
+    .flash {
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .flash.success {
+      background: #064e3b;
+      color: #d1fae5;
+    }
+
+    .flash.error {
+      background: #7f1d1d;
+      color: #fee2e2;
+    }
+
+    @media (max-width: 700px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>⚙️ Homelab Kontrolpanel</h1>
+    <p class="muted">Opdateret: {{ now }} · Auto-opdatering: {{ page_refresh_seconds }} sekunder</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <div class="card">
+      <h2>📡 Remote enhedsstatus</h2>
+      <div class="status-grid">
+        {% for device_id, device in remote_devices.items() %}
+          {% set st = remote_statuses[device_id] %}
+          <div class="status-box {{ st['status_class'] }}">
+            <div class="status-title">{{ device["title"] }}</div>
+
+            <div class="status-main">
+              {% if st["overall"] == "online" %}
+                🟢 {{ st["overall_text"] }}
+              {% else %}
+                🔴 {{ st["overall_text"] }}
+              {% endif %}
+            </div>
+
+            <div class="status-line">Ping: {{ st["ping_text"] }}</div>
+            <div class="status-line">MQTT: {{ st["mqtt_info"] }}</div>
+            <div class="status-line">Handling: {{ st["action_text"] }}</div>
+            <div class="status-line">Sidste kommando: {{ st["last_command"] }}</div>
+            <div class="status-line">Sidste resultat: {{ st["last_result"] }}</div>
+            <div class="status-line">Sidste besked: {{ st["last_message"] }}</div>
+            <div class="status-line">Sidst opdateret: {{ st["last_updated"] }}</div>
+
+            {% if st["ip"] %}
+              <div class="status-line">IP: {{ st["ip"] }}</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⚡ Wake-on-LAN (Tænd remote enheder)</h2>
+      <p class="muted">Send magic packet til valgt enhed</p>
+
+      <div class="wol-grid">
+        {% for device_id, device in remote_devices.items() %}
+          {% if device.wol and device.wol.enabled %}
+            <form method="post"
+                  action="/wol/{{ device_id }}{% if token %}?token={{ token }}{% endif %}"
+                  {% if device.wol.confirm %}
+                    onsubmit="return confirm('{{ device.wol.confirm }}');"
+                  {% else %}
+                    onsubmit="return confirm('Er du sikker på at du vil tænde {{ device.wol.label }}?');"
+                  {% endif %}>
+              <button class="ok" type="submit">
+                ⚡ {{ device.wol.label }}
+              </button>
+            </form>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+
+    {% for device_id, device in remote_devices.items() %}
+      {% if device.mqtt_controls %}
+        <div class="card">
+          <h2>🔌 {{ device.mqtt_controls.title }}</h2>
+          <div class="grid">
+            {% for button in device.mqtt_controls.buttons %}
+              <form method="post"
+                    action="/mqtt/{{ device_id }}/{{ button.id }}{% if token %}?token={{ token }}{% endif %}"
+                    {% if button.confirm %}
+                      onsubmit="return confirm('{{ button.confirm }}');"
+                    {% endif %}>
+                <button class="{{ button.color }}" type="submit">
+                  {{ button.icon }} {{ button.label }}
+                </button>
+              </form>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    <div class="card">
+      <h2>🖥️ {{ local_server.title }}</h2>
+      <div class="grid">
+        {% for button in local_server.buttons %}
+          <form method="post"
+                action="/local/{{ button.id }}{% if token %}?token={{ token }}{% endif %}"
+                {% if button.confirm %}
+                  onsubmit="return confirm('{{ button.confirm }}');"
+                {% endif %}>
+            <button class="{{ button.color }}" type="submit">
+              {{ button.icon }} {{ button.label }}
+            </button>
+          </form>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</body>
+</html>
