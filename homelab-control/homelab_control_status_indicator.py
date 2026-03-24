@@ -120,7 +120,12 @@ def on_disconnect(*args):
 
 def uptime_loop():
     while not stop_event.is_set():
+        # Send heartbeat for power status
+        publish(TOPIC_POWER, "online", retain=True, qos=1)
+
+        # Send uptime
         publish(TOPIC_INFO_UPTIME, str(get_uptime_seconds()), retain=True, qos=0)
+
         stop_event.wait(PUBLISH_UPTIME_EVERY)
 
 

@@ -111,6 +111,15 @@ def set_mqtt_state(topic: str, payload: str) -> None:
         }
 
 
+def set_mqtt_connected(value: bool) -> None:
+    global MQTT_CONNECTED
+    MQTT_CONNECTED = value
+
+
+def get_mqtt_connected() -> bool:
+    return MQTT_CONNECTED
+
+
 def get_mqtt_state(topic: str) -> dict | None:
     if not topic:
         return None
@@ -213,6 +222,10 @@ def build_remote_device_statuses() -> dict:
 
 def on_connect_compat(*args):
     client = args[0]
+    set_mqtt_connected(True)
+
+    print("Homelab-panel MQTT connected", flush=True)
+
     topics = set()
 
     for device in REMOTE_DEVICES.values():
@@ -230,12 +243,17 @@ def on_connect_compat(*args):
                 topics.add(topic)
 
     for topic in topics:
-        client.subscribe(topic, qos=0)
+        client.subscribe(topic, qos=1)
+        print(f"Homelab-panel subscribed to {topic}", flush=True)
 
+def on_disconnect_compat(*args):
+    set_mqtt_connected(False)
+    print("Homelab-panel MQTT disconnected", flush=True)
 
 def on_message_compat(client, userdata, msg):
     payload = msg.payload.decode("utf-8", errors="replace").strip()
     set_mqtt_state(msg.topic, payload)
+    print(f"Homelab-panel MQTT message: {msg.topic} = {payload}", flush=True)
 
 
 def build_mqtt_client():
@@ -245,13 +263,14 @@ def build_mqtt_client():
             client_id=MQTT_CONFIG["client_id_panel_status"],
             protocol=mqtt.MQTTv311,
         )
-        return client
     except AttributeError:
         client = mqtt.Client(
             client_id=MQTT_CONFIG["client_id_panel_status"],
             protocol=mqtt.MQTTv311,
         )
-        return client
+
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+    return client
 
 
 def start_mqtt_listener() -> None:
@@ -263,12 +282,14 @@ def start_mqtt_listener() -> None:
         client.username_pw_set(MQTT_CONFIG["user"], MQTT_CONFIG["pass"])
 
     client.on_connect = on_connect_compat
+    client.on_disconnect = on_disconnect_compat
     client.on_message = on_message_compat
 
     try:
         client.connect(MQTT_CONFIG["host"], MQTT_CONFIG["port"], keepalive=60)
         client.loop_start()
         MQTT_CLIENT = client
+        print("Homelab-panel MQTT listener started", flush=True)
     except Exception as exc:
         print(f"MQTT listener kunne ikke starte: {exc}", flush=True)
 
