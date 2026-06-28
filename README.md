@@ -19,7 +19,7 @@ Improper configuration can lead to:
 - data loss  
 - unauthorized access  
 
-> ⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
 
 ## Disclaimer
 
