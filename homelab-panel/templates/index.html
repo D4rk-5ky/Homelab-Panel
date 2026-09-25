@@ -116,6 +116,22 @@
       font-size: 14px;
     }
 
+    .history-link {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: #374151;
+      color: #f3f4f6;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    .history-link:hover {
+      filter: brightness(1.15);
+    }
+
     .flash {
       border-radius: 10px;
       padding: 12px;
@@ -181,6 +197,10 @@
             {% if st["ip"] %}
               <div class="status-line">IP: {{ st["ip"] }}</div>
             {% endif %}
+
+            <a class="history-link" href="{{ url_for('device_history', device_id=device_id, token=token) }}">
+              🕘 Historik
+            </a>
           </div>
         {% endfor %}
       </div>

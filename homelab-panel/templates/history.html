@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8">
+  <title>{{ device.title }} historik · Homelab Kontrolpanel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🕘</text></svg>">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #111827;
+      color: #f3f4f6;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .card {
+      background: #1f2937;
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 18px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.25);
+    }
+
+    h1, h2 {
+      margin-top: 0;
+    }
+
+    .muted {
+      color: #9ca3af;
+      font-size: 14px;
+    }
+
+    .back-link {
+      display: inline-block;
+      margin-bottom: 18px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: #374151;
+      color: #f3f4f6;
+      text-decoration: none;
+      font-weight: bold;
+    }
+
+    .history-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .history-item {
+      background: #111827;
+      border: 1px solid #374151;
+      border-radius: 10px;
+      padding: 12px;
+      word-break: break-word;
+    }
+
+    .history-time {
+      color: #9ca3af;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+
+    .history-value {
+      font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back-link" href="{{ url_for('index', token=token) }}">← Tilbage til kontrolpanel</a>
+
+    <h1>🕘 Historik · {{ device.title }}</h1>
+    <p class="muted">Vist: {{ now }}</p>
+
+    {% if history %}
+      <div class="card">
+        <h2>⌨️ Kommando-historik</h2>
+        <div class="history-list">
+          {% for entry in history %}
+            <div class="history-item">
+              <div class="history-time">{{ entry.timestamp }}</div>
+              <div class="history-value">{{ entry.command }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>✅ Resultat-historik</h2>
+        <div class="history-list">
+          {% for entry in history %}
+            <div class="history-item">
+              <div class="history-time">{{ entry.timestamp }}</div>
+              <div class="history-value">{{ entry.result }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>💬 Besked-historik</h2>
+        <div class="history-list">
+          {% for entry in history %}
+            <div class="history-item">
+              <div class="history-time">{{ entry.timestamp }}</div>
+              <div class="history-value">{{ entry.message }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% else %}
+      <div class="card">
+        <h2>Ingen historik endnu</h2>
+        <p class="muted">
+          Der er ingen gemte historikposter for denne enhed, eller enheden har ikke et history_topic konfigureret endnu.
+        </p>
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>

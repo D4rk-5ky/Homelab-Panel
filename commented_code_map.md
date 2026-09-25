@@ -1,527 +1,476 @@
 # commented_code_map.md
 
-This file maps the current Homelab Panel codebase. It describes what each function, route, supplied command, service, and major data/configuration file does and why it exists.
+This file maps the current Homelab Panel codebase and explains what each function, route, script, service, command interface, and major data file does and why it exists.
 
 ## Root files
 
 ### `VERSION`
-
-Contains the current tracked release number. It exists so a release can be identified without inferring a version from a ZIP filename.
+Stores the current release number.
 
 ### `README.md`
-
-Current-use documentation only: installation, configuration, commands, supported interface, current behavior, security/safety notes, and disclaimers.
+Current-use documentation only: installation, configuration, MQTT payloads, routes, commands, behavior, safety notes, and disclaimers.
 
 ### `VERSIONING.md`
+Defines version increment/rollover rules and records release changes.
 
-Defines the `0.0.1` increment rule, rollover behavior, and records all created releases and their changes.
+### `.gitignore`
+Ignores the machine-specific active panel/control configuration files while explicitly preserving the three tracked `*.example.*` configuration files.
 
----
-
-# `homelab-control/` — remote MQTT control/status agent
-
-## `homelab-control/config.json`
-
-Runtime JSON configuration for the remote agent. It exists to keep broker details, MQTT topic names, client IDs, timing, and payload-to-script mappings outside Python/shell logic.
-
-## `homelab-control/config.example.json`
-
-Complete example copy containing every currently supported remote-agent configuration option. It exists so the expected configuration shape remains explicit when deployments customize `config.json`.
-
-## `homelab-control/homelab_control_command_listener.py`
-
-Long-running MQTT listener that converts allowed MQTT payloads into configured executable script filenames.
-
-### `load_config() -> dict`
-
-Reads and parses `config.json`.
-
-**Why:** configuration must be external to the Python implementation so broker/topics/commands can be changed without editing listener logic.
-
-### `run_script(script_name: str) -> None`
-
-Builds the script path inside the fixed `scripts/` directory, verifies that it is a regular file and executable, then executes it with `subprocess.run()` using a 60-second timeout. It prints return code/stdout/stderr instead of interpreting arbitrary MQTT text as a command.
-
-**Why:** this constrains remote control to script filenames that were explicitly mapped in configuration and prevents the MQTT payload from being passed directly to a shell.
-
-### `on_connect(*args)`
-
-MQTT connection callback. Subscribes to the configured control topic at QoS 1.
-
-**Why:** the listener must re-establish its command subscription whenever the MQTT connection is established/re-established.
-
-### `on_message(client, userdata, msg)`
-
-Decodes the MQTT payload, looks it up in `COMMAND_MAP`, rejects unknown payloads, and calls `run_script()` for a known mapping.
-
-**Why:** provides the allow-listed payload-to-script dispatch point.
-
-### `build_client()`
-
-Creates a Paho MQTT v3.1.1 client. It first requests Paho's VERSION2 callback API and falls back to the older constructor when `CallbackAPIVersion` is unavailable.
-
-**Why:** maintains compatibility with both newer and older Paho installations.
-
-### `main() -> int`
-
-Builds the client, applies credentials when configured, installs callbacks, connects to the broker, and enters `loop_forever()`.
-
-**Why:** this is the program entry point used by direct execution and the systemd service.
+**Why:** prevents host-specific settings and credentials from being committed while keeping complete configuration templates under version control.
 
 ---
 
-## `homelab-control/homelab_control_status_indicator.py`
-
-Long-running status publisher that mirrors local state files to retained MQTT topics and periodically publishes online/uptime state.
-
-### `load_config() -> dict`
-
-Reads `config.json`.
-
-**Why:** keeps remote status topics, broker settings, and timing configurable.
-
-### `ensure_dirs() -> None`
-
-Creates the runtime `state/` and `logs/` directories if absent.
-
-**Why:** clean releases do not need to ship historical runtime files; the process can initialize its own storage locations.
-
-### `read_text_file(path: str, default: str = "") -> str`
-
-Reads/strips a text state file and returns a default for missing/empty/unreadable files.
-
-**Why:** status reporting should continue even when a state file has not yet been created or cannot be read.
-
-### `write_text_file(path: str, value: str) -> None`
-
-Writes through `path.tmp` and atomically replaces the target with `os.replace()`.
-
-**Why:** reduces the chance of readers observing a partially written state file.
-
-### `read_action() -> str`
-
-Reads the action file with `idle` as the default.
-
-**Why:** centralizes the default action state.
-
-### `write_action(value: str) -> None`
-
-Writes the action state through `write_text_file()`.
-
-**Why:** reuses the atomic state-file write path.
-
-### `get_uptime_seconds() -> int`
-
-Reads `/proc/uptime` and returns whole seconds, or `-1` on failure.
-
-**Why:** provides a small Linux uptime value for MQTT status without invoking another process.
-
-### `publish(topic: str, payload: str, retain: bool = True, qos: int = 1) -> None`
-
-Publishes through the module's active MQTT client when one exists.
-
-**Why:** centralizes MQTT publication defaults and safely does nothing before the client is assigned.
-
-### `publish_command_status() -> None`
-
-Reads the last command/result/message/update state files and publishes them retained.
-
-**Why:** reconnects can republish the last known command state immediately.
-
-### `on_connect(*args)`
-
-Publishes online state, current action, hostname, and last command status when connected.
-
-**Why:** quickly restores broker-visible retained state after a service/broker reconnect.
-
-### `on_disconnect(*args)`
-
-Current no-op disconnect callback.
-
-**Why:** callback slot is present for compatibility/future handling; offline state is primarily handled through MQTT last-will and normal shutdown publication.
-
-### `uptime_loop()`
-
-Until `stop_event` is set, publishes retained `online` and uptime, then waits `publish_uptime_every` seconds.
-
-**Why:** supplies both a heartbeat used for freshness and machine uptime.
-
-### `action_sync_loop()`
-
-Polls the local action file every two seconds and publishes when its value changes.
-
-**Why:** shell action scripts and the Python status service communicate through a simple local file rather than sharing process memory.
-
-### `command_status_sync_loop()`
-
-Polls command/result/message/update files every two seconds and republishes the tuple when it changes.
-
-**Why:** mirrors status written by shell scripts to MQTT even though the scripts and Python service are separate processes.
-
-### `build_client()`
-
-Creates a Paho MQTT v3.1.1 client with new-callback-API/legacy fallback.
-
-**Why:** same Paho compatibility strategy as the command listener.
-
-### `main() -> int`
-
-Creates runtime directories/default state files, configures credentials and retained last-will `offline`, connects/starts the MQTT loop, starts the three background synchronization loops, installs SIGTERM/SIGINT handling, waits for shutdown, then attempts to publish `offline` and disconnect cleanly.
-
-**Why:** coordinates the whole status service lifecycle and provides both abnormal-offline last-will behavior and best-effort normal shutdown state.
-
-### nested `handle_signal(signum, frame)` inside `main()`
-
-Sets `stop_event` when SIGTERM or SIGINT is received.
-
-**Why:** lets all loops leave cooperatively and enables the `finally` cleanup path.
-
----
-
-## `homelab-control/homelab_control_lib.sh`
-
-Shared shell library sourced by all four remote action scripts.
-
-### `json_get KEY.PATH`
-
-Uses an embedded Python snippet to read a dot-separated value from `config.json`.
-
-**Why:** avoids requiring `jq` while letting shell scripts consume the same configuration file as Python.
-
-### `ensure_dirs`
-
-Creates `state/` and `logs/`.
-
-**Why:** every state/log writer can safely run on a clean installation.
-
-### `timestamp_now`
-
-Returns local time in `YYYY-MM-DDTHH:MM:SS` form.
-
-**Why:** provides a consistent timestamp for state and command logs.
-
-### `mqtt_pub TOPIC PAYLOAD`
-
-Calls `mosquitto_pub` with broker host/port, optional user/password, retained publication, and QoS 1.
-
-**Why:** all shell actions need the same MQTT publication behavior without repeating credentials/options.
-
-### `write_action VALUE`
-
-Writes the current action state file.
-
-**Why:** gives the Python status process a simple local source for action state.
-
-### `write_command_status COMMAND RESULT MESSAGE`
-
-Writes last-command state files, appends one line to `logs/commands.log`, then publishes the same data to the configured retained MQTT topics.
-
-**Why:** provides a single consistent status/logging path for all shutdown/reboot scripts.
-
-### `set_idle`
-
-Writes/publishes `idle`.
-
-**Why:** centralizes the normal no-pending-action state.
-
-### `set_shutdown_pending`
-
-Writes/publishes `shutdown_pending`.
-
-**Why:** reports that a shutdown has been requested but has not occurred yet.
-
-### `set_reboot_pending`
-
-Writes/publishes `reboot_pending`.
-
-**Why:** reports that a reboot has been requested but has not occurred yet.
-
----
-
-## Remote action command scripts
-
-All four scripts use `set -euo pipefail`, find their own installation directory, and source `homelab_control_lib.sh`.
-
-### `homelab-control/scripts/shutdown_delay.sh`
-
-Sets `shutdown_pending`, records a `running` status, calls `shutdown -h +1`, then records `success`; on failure it restores `idle`, records `failure`, and exits nonzero.
-
-**Why:** provides a one-minute delayed power-off with MQTT/local state feedback.
-
-### `homelab-control/scripts/shutdown_cancel.sh`
-
-Calls `shutdown -c`; on success sets `idle` and records success, otherwise records failure and exits nonzero.
-
-**Why:** cancels a previously scheduled shutdown/reboot.
-
-### `homelab-control/scripts/reboot_delay.sh`
-
-Sets `reboot_pending`, records `running`, calls `shutdown -r +1`, then records success; on failure it restores `idle`, records failure, and exits nonzero.
-
-**Why:** provides a one-minute delayed reboot with status feedback.
-
-### `homelab-control/scripts/reboot_cancel.sh`
-
-Calls `shutdown -c`; on success sets `idle` and records success, otherwise records failure and exits nonzero.
-
-**Why:** exposes a dedicated reboot-cancel control even though Linux uses the same `shutdown -c` command to cancel either scheduled action.
-
----
-
-## Remote systemd units
-
-### `homelab-control-command-listener.service`
-
-Runs the command listener as root after `network-online.target`, restarts it always after failures/exits, and uses the configured installation path in the unit.
-
-**Why:** keeps the remote MQTT command subscriber continuously available.
-
-### `homelab-control-status-indicator.service`
-
-Runs the status indicator as root after `network-online.target` and restarts it always.
-
-**Why:** keeps heartbeat/status publication running independently of the command listener.
-
----
-
-# `homelab-panel/` — Flask web panel
+# `homelab-panel/`
 
 ## `homelab-panel/config.py`
-
-Runtime panel settings: WoL broadcast address, broker connection/publication settings, optional query token, local script directory, MQTT freshness TTL, and page refresh interval.
+Local-only panel runtime settings: WoL broadcast address, MQTT broker credentials/settings, panel control topic, token gate, local script path, MQTT freshness TTL, and page refresh interval. This file is created from `config.example.py` and is intentionally excluded from Git/release ZIPs.
 
 ## `homelab-panel/config.example.py`
-
-Complete example copy containing every currently supported panel setting.
+Complete example copy of every panel configuration field.
 
 ## `homelab-panel/devices.py`
-
-Declarative data defining remote devices, their WoL/status/MQTT controls, and local server buttons.
-
-**Why:** the HTML and Flask routes can be generic and data-driven instead of adding hard-coded route/template logic for every device.
+Local-only device configuration defining `REMOTE_DEVICES` and `LOCAL_SERVER`. Device records contain display data, WoL configuration, status/history topics, and allow-listed MQTT button definitions. This file is created from `devices.example.py` and is intentionally excluded from Git/release ZIPs.
 
 ## `homelab-panel/devices.example.py`
-
-Complete example copy containing every currently supported device/button field.
-
----
+Complete example copy of the device/local-control configuration structure.
 
 ## `homelab-panel/app.py`
-
-Flask application plus MQTT state listener and helpers.
+Flask application plus panel-side MQTT listener/control dispatcher.
 
 ### `check_token() -> bool`
+Checks the optional `PANEL_TOKEN` against the current request query string.
 
-Allows all requests when `PANEL_TOKEN` is empty; otherwise compares the request's `token` query parameter with the configured value.
+**Why:** keeps one consistent authorization check for all web routes.
 
-**Why:** provides the project's current optional lightweight access gate for every exposed route.
+### `run_command(cmd, timeout=20) -> tuple[bool, str]`
+Runs an external command without a shell, captures output, applies a timeout, and returns success plus a useful message.
 
-### `run_command(cmd: list[str], timeout: int = 20) -> tuple[bool, str]`
+**Why:** centralizes safe subprocess invocation and avoids duplicating return-code/error handling.
 
-Runs a command without a shell, captures stdout/stderr, applies a timeout, and converts the return code/output/exception into `(success, message)`.
+### `mqtt_publish(topic, payload) -> tuple[bool, str]`
+Builds a `mosquitto_pub` command from `MQTT_CONFIG` and calls `run_command()`.
 
-**Why:** WoL, MQTT publication, ping, and local scripts all need consistent subprocess handling.
+**Why:** one reusable path handles all panel-originated MQTT publication.
 
-### `mqtt_publish(topic: str, payload: str) -> tuple[bool, str]`
+### `send_wol(mac) -> tuple[bool, str]`
+Runs `wakeonlan -i <broadcast> <mac>` through `run_command()`.
 
-Builds a `mosquitto_pub` argument list from `MQTT_CONFIG`, optionally adds retain/user/password options, then calls `run_command()`.
+**Why:** centralizes Wake-on-LAN behavior for both web actions and MQTT-driven panel actions.
 
-**Why:** panel buttons publish through one controlled external-command path.
+### `run_local_script(script_name) -> tuple[bool, str]`
+Resolves a script below `LOCAL_SCRIPT_PATH`, verifies it exists and is executable, then runs it.
 
-### `send_wol(mac: str) -> tuple[bool, str]`
+**Why:** local web actions remain restricted to configured script filenames rather than arbitrary commands.
 
-Runs `wakeonlan -i WOL_BROADCAST MAC` through `run_command()`.
+### `ping_host(ip) -> bool`
+Runs one short ping to the configured device IP.
 
-**Why:** provides one reusable WoL action for every device definition.
+**Why:** feeds the panel's strict online-status policy.
 
-### `run_local_script(script_name: str) -> tuple[bool, str]`
+### `set_mqtt_state(topic, payload) -> None`
+Stores the latest received status/history payload and local receipt time under a lock.
 
-Joins `LOCAL_SCRIPT_PATH` with the configured filename, checks file/executable status, then runs it without a shell.
+**Why:** MQTT callbacks run in a background thread while Flask reads state during requests.
 
-**Why:** local control buttons can only reference executable files in the configured local script directory rather than arbitrary command strings.
-
-### `ping_host(ip: str) -> bool`
-
-Calls `ping -c 1 -W 1` with a three-second subprocess timeout.
-
-**Why:** provides the network-reachability half of the panel's strict online determination.
-
-### `set_mqtt_state(topic: str, payload: str) -> None`
-
-Under a lock, stores the most recently received payload and current receipt timestamp for a topic.
-
-**Why:** Flask request handling and the Paho network thread share status data safely.
-
-### `set_mqtt_connected(value: bool) -> None`
-
-Updates the module-level MQTT connection flag.
-
-**Why:** records broker connection state for potential status use. The current device evaluation does not use this flag directly.
+### `set_mqtt_connected(value) -> None`
+Updates the module MQTT connection flag.
 
 ### `get_mqtt_connected() -> bool`
+Returns the module MQTT connection flag.
 
-Returns the module-level MQTT connection flag.
+**Why:** keeps MQTT connection-state access encapsulated even though it is not currently rendered in the UI.
 
-**Why:** accessor paired with `set_mqtt_connected()`. It is not currently called by device-status evaluation.
+### `get_mqtt_state(topic) -> dict | None`
+Returns stored MQTT state for a non-empty topic under the state lock.
 
-### `get_mqtt_state(topic: str) -> dict | None`
+**Why:** one thread-safe state lookup path is reused by status/history helpers.
 
-Returns the stored state for a non-empty topic under the state lock.
+### `get_mqtt_payload_and_age(topic) -> tuple[str | None, int | None]`
+Returns a stored payload plus seconds since the panel received it.
 
-**Why:** centralizes thread-safe MQTT state retrieval.
+**Why:** power state must be both correct and fresh.
 
-### `get_mqtt_payload_and_age(topic: str) -> tuple[str | None, int | None]`
+### `action_to_danish(payload) -> str`
+Maps protocol action values such as `idle`, `shutdown_pending`, and `reboot_pending` to Danish UI text.
 
-Gets stored state, strips the payload, and computes age in seconds from the receipt timestamp.
+**Why:** protocol values remain stable while the UI stays readable.
 
-**Why:** device status needs both the retained value and its local freshness.
+### `result_to_danish(payload) -> str`
+Maps `none`, `unknown`, `running`, `success`, and `failure` to Danish UI text.
 
-### `action_to_danish(payload: str | None) -> str`
+**Why:** separates stored protocol values from display wording.
 
-Maps known action states to Danish UI text, falling back to the original payload.
+### `command_to_danish(payload) -> str`
+Displays missing/`none`/`unknown` current commands as `Ingen`.
 
-**Why:** keeps protocol values stable while presenting friendlier localized text.
+**Why:** cleared command state should not show implementation sentinel values in the UI.
 
-### `result_to_danish(payload: str | None) -> str`
+### `get_device_history(device) -> list[dict]`
+Reads the latest retained JSON payload from the device's `history_topic`, validates that it is a list of dictionaries, normalizes display values, and returns newest entries first.
 
-Maps `running`, `success`, and `failure` to Danish UI text.
+**Why:** history parsing/validation belongs in one place instead of the Jinja template.
 
-**Why:** same protocol/UI separation for command results.
+### `evaluate_remote_device_status(device) -> dict`
+Pings a device, reads all configured MQTT status fields, applies the freshness TTL, and returns the display model for one status card.
 
-### `evaluate_remote_device_status(device: dict) -> dict`
-
-Pings the device, reads configured MQTT state topics, applies the freshness TTL, and returns the complete display-state dictionary. Overall state is online only when ping succeeds and a fresh MQTT power payload equals `online`.
-
-**Why:** consolidates the panel's status policy in one place.
+**Why:** consolidates the panel's strict online policy and current-state presentation.
 
 ### `build_remote_device_statuses() -> dict`
+Calls `evaluate_remote_device_status()` for every configured remote device.
 
-Runs `evaluate_remote_device_status()` for every entry in `REMOTE_DEVICES`.
+**Why:** keeps the index route small and data-driven.
 
-**Why:** builds the template's status dictionary without duplicating loop logic in the route.
+### `execute_remote_action(device_id, command) -> tuple[bool, str]`
+Central allow-listed action dispatcher used by both web routes and incoming panel-control MQTT.
+
+Behavior:
+
+- `power_on` resolves only the configured/enabled WoL MAC and calls `send_wol()`.
+- `shutdown` aliases to the configured `shutdown_delay` button.
+- `reboot` aliases to the configured `reboot_delay` button.
+- all other remote commands must match an existing `mqtt_controls.buttons[].id` for that exact device.
+- the published topic/payload always comes from `devices.py`; incoming MQTT cannot choose an arbitrary target topic or shell command.
+
+**Why:** web and MQTT control share one authorization/dispatch implementation instead of drifting apart.
+
+### `process_panel_control_message(payload) -> None`
+Parses incoming panel-control JSON, requires a JSON object containing `device_id` and `command`, calls `execute_remote_action()`, and logs success/failure.
+
+**Why:** gives Home Assistant/other MQTT clients a structured control interface while keeping validation separate from the network callback.
 
 ### `on_connect_compat(*args)`
+Marks the panel connected, discovers all configured device status/history topics plus the optional panel-control topic, and subscribes to each unique topic.
 
-Marks MQTT connected, collects all non-empty status topics from every configured remote device, subscribes once to each unique topic at QoS 1, and logs subscriptions.
-
-**Why:** automatically adapts panel subscriptions to `devices.py` and avoids duplicate subscriptions.
+**Why:** subscriptions automatically follow configuration and reconnects.
 
 ### `on_disconnect_compat(*args)`
-
-Marks MQTT disconnected and logs it.
-
-**Why:** maintains connection-state tracking across broker/network loss.
+Marks the panel disconnected and logs the event.
 
 ### `on_message_compat(client, userdata, msg)`
+Routes received MQTT messages:
 
-Decodes an incoming MQTT payload and stores it with `set_mqtt_state()`.
+- if the message is on `panel_control_topic`, retained messages are rejected;
+- non-retained panel-control messages are processed on a daemon thread so WoL/MQTT subprocess execution does not block the Paho callback loop;
+- all other subscribed messages are stored as status/history state.
 
-**Why:** feeds the in-memory state used during page rendering.
+**Why:** separates control traffic from status traffic and prevents dangerous retained command replay.
 
 ### `build_mqtt_client()`
+Creates a Paho MQTT v3.1.1 client with VERSION2 callback API when available and a legacy fallback, then sets reconnect backoff.
 
-Creates a Paho MQTT v3.1.1 client using the configured panel client ID, with VERSION2/legacy constructor fallback, then configures reconnect delay from one to 30 seconds.
-
-**Why:** provides compatibility plus bounded reconnect backoff.
+**Why:** maintains compatibility across Paho versions.
 
 ### `start_mqtt_listener() -> None`
+Configures credentials/callbacks, connects to the broker, starts Paho's background loop, and keeps Flask running even when initial broker connection fails.
 
-Builds/configures callbacks and credentials, attempts broker connection, starts Paho's background network loop, and stores the client. Connection failures are printed rather than crashing Flask startup.
+**Why:** panel availability should not depend entirely on broker startup order.
 
-**Why:** lets the web panel remain available even if the broker cannot be reached at startup.
+### `index()` — `GET /`
+Checks the token, builds remote statuses, and renders `templates/index.html`.
 
-### Flask route `index()` — `GET /`
+**Why:** main dashboard/status/control page.
 
-Checks the optional token, builds all remote status values, and renders `templates/index.html` with devices, status, local controls, refresh interval, timestamp, and token.
+### `device_history(device_id)` — `GET /history/<device_id>`
+Checks token/device, loads the selected device's parsed retained history, and renders `templates/history.html`.
 
-**Why:** main control/status page.
+**Why:** gives every remote status card a dedicated history view without crowding the main page.
 
-### Flask route `wol(device_id)` — `POST /wol/<device_id>`
+### `wol(device_id)` — `POST /wol/<device_id>`
+Checks token/device and calls `execute_remote_action(device_id, "power_on")`.
 
-Checks token/device/existence/enabled state, sends WoL, flashes success/error, and redirects to the index.
+**Why:** web WoL uses the same core dispatcher as MQTT-driven WoL.
 
-**Why:** exposes only configured WoL targets through the web UI.
+### `mqtt_button(device_id, button_id)` — `POST /mqtt/<device_id>/<button_id>`
+Checks token/device and passes the configured button ID to `execute_remote_action()`.
 
-### Flask route `mqtt_button(device_id, button_id)` — `POST /mqtt/<device_id>/<button_id>`
+**Why:** browser remote actions and MQTT remote actions use the same allow-list logic.
 
-Checks token/device/control/button definitions, publishes the preconfigured topic/payload, flashes the result, and redirects.
+### `local_button(button_id)` — `POST /local/<button_id>`
+Looks up a local button in `LOCAL_SERVER` and executes its configured script via `run_local_script()`.
 
-**Why:** browser users choose predefined actions rather than supplying arbitrary MQTT topic/payload values.
-
-### Flask route `local_button(button_id)` — `POST /local/<button_id>`
-
-Checks token and configured local button, runs the preconfigured script filename through `run_local_script()`, flashes the result, and redirects.
-
-**Why:** browser users can only invoke local actions listed in `LOCAL_SERVER`.
+**Why:** local actions remain fixed/configured rather than accepting arbitrary user commands.
 
 ### Module entry behavior
+Starts the MQTT listener whether executed directly or imported; direct execution also starts Flask on `0.0.0.0:5000`.
 
-When executed directly, the module starts the MQTT listener and Flask on `0.0.0.0:5000`. When imported (for example by a WSGI loader), it also calls `start_mqtt_listener()`.
-
-**Why:** current code expects status listening to accompany the Flask app in either launch style. Deployment with multiple imported worker processes should be reviewed because each importing process can start its own MQTT listener/client attempt.
+**Why:** MQTT status/control listening accompanies the web application. Multi-worker WSGI deployments should be reviewed because each importing worker could attempt its own MQTT client.
 
 ---
 
 ## `homelab-panel/templates/index.html`
+Main dark dashboard template. It renders:
 
-Jinja/HTML template for the dark control panel. It:
+- remote online/current status;
+- a History button in every remote status card;
+- Wake-on-LAN buttons;
+- configured remote MQTT buttons;
+- configured local controls;
+- flash messages and auto-refresh.
 
-- auto-refreshes based on `PAGE_REFRESH_SECONDS`;
-- renders flash messages;
-- loops over all remote devices/statuses;
-- renders enabled WoL buttons;
-- renders configured MQTT control buttons;
-- renders local action buttons;
-- propagates the current token into generated form action URLs.
+## `homelab-panel/templates/history.html`
+Per-device history page. It renders newest-first history in three separate categories:
 
-**Why:** keeps presentation separate from Flask/device configuration while making device sections data-driven.
+- Command history;
+- Result history;
+- Message history.
 
----
-
-## Local panel command scripts
-
-All four use `set -euo pipefail` and call `sudo shutdown ...`.
-
-### `homelab-panel/scripts/shutdown_delay.sh`
-
-Schedules local shutdown in one minute and prints a Danish confirmation.
-
-### `homelab-panel/scripts/shutdown_cancel.sh`
-
-Runs `sudo shutdown -c` and prints a Danish confirmation.
-
-### `homelab-panel/scripts/reboot_delay.sh`
-
-Schedules local reboot in one minute and prints a Danish confirmation.
-
-### `homelab-panel/scripts/reboot_cancel.sh`
-
-Runs `sudo shutdown -c` and prints a Danish confirmation.
-
-**Why these scripts exist:** `LOCAL_SERVER` buttons reference simple fixed script filenames, keeping privileged operating-system commands outside Flask route definitions.
+Every item shows the original event timestamp.
 
 ---
+
+## Local panel scripts
+
+### `scripts/shutdown_delay.sh`
+Schedules local shutdown in one minute with `sudo shutdown -h +1`.
+
+### `scripts/shutdown_cancel.sh`
+Runs `sudo shutdown -c`.
+
+### `scripts/reboot_delay.sh`
+Schedules local reboot in one minute with `sudo shutdown -r +1`.
+
+### `scripts/reboot_cancel.sh`
+Runs `sudo shutdown -c`.
+
+**Why:** privileged OS operations remain in fixed helper scripts outside Flask route code.
 
 ## `homelab-panel/homelab-controll.service`
-
-Current panel systemd unit. It runs `app.py` as the configured non-root user/group from its configured host-specific working directory and restarts on failure.
-
-**Why:** provides automatic service startup/restart for the Flask panel. Paths/users are deployment-specific and must be reviewed before installation.
+Systemd unit for the panel using deployment-specific user/group/path values.
 
 ---
 
-# Current external commands used by code
+# `homelab-control/`
 
-These are not project CLI flags; they are operating-system commands invoked by the application/scripts.
+## `homelab-control/config.json`
+Local-only remote-agent runtime configuration created from `config.example.json`; intentionally excluded from Git/release ZIPs.
 
-- `mosquitto_pub` — panel MQTT commands and remote shell status publication.
-- `wakeonlan` — panel Wake-on-LAN packet transmission.
-- `ping` — panel reachability check.
-- `shutdown -h +1 ...` — schedule shutdown.
-- `shutdown -r +1 ...` — schedule reboot.
-- `shutdown -c` — cancel pending shutdown/reboot.
-- `sudo` — used by local panel helper scripts around shutdown commands.
+Remote runtime MQTT/client/topic/timing/command mapping configuration.
 
-# Current supported application flags
+## `homelab-control/config.example.json`
+Complete example of every current remote configuration option, including `status_history` and `history_max_entries`.
 
-There are **no supported CLI flags or subcommands** in version 0.0.1. All supported configuration is file-based and all user actions are web/MQTT/script based.
+## `homelab_control_command_listener.py`
+Remote MQTT payload-to-script listener.
+
+### `load_config() -> dict`
+Reads `config.json`.
+
+### `run_script(script_name) -> None`
+Resolves the mapped filename inside the fixed `scripts/` directory, checks file/executable status, and runs it with a timeout.
+
+**Why:** received MQTT text is never executed directly as shell input.
+
+### `on_connect(*args)`
+Subscribes to the configured `control_power` topic at QoS 1.
+
+### `on_message(client, userdata, msg)`
+Decodes the payload, looks it up in `COMMAND_MAP`, rejects unknown values, and runs only the configured mapped script.
+
+### `build_client()`
+Creates a Paho MQTT v3.1.1 client with new/legacy API compatibility.
+
+### `main() -> int`
+Applies credentials, attaches callbacks, connects, and enters `loop_forever()`.
+
+---
+
+## `homelab_control_status_indicator.py`
+Remote retained status/history publisher and boot-session history manager.
+
+### `load_config() -> dict`
+Reads `config.json`.
+
+### `ensure_dirs() -> None`
+Creates runtime `state/` and `logs/` directories.
+
+### `read_text_file(path, default="") -> str`
+Reads stripped text and returns a default for missing/empty/unreadable files.
+
+### `write_text_file(path, value) -> None`
+Writes through a temporary file and atomically replaces the destination.
+
+**Why:** readers should not observe partially written state files.
+
+### `read_action() -> str`
+Reads action with `idle` fallback.
+
+### `write_action(value) -> None`
+Writes action using the atomic text writer.
+
+### `get_uptime_seconds() -> int`
+Reads `/proc/uptime` and returns whole seconds or `-1` on error.
+
+### `get_current_boot_id() -> str`
+Reads Linux `/proc/sys/kernel/random/boot_id`.
+
+**Why:** a machine reboot can be distinguished from a mere service restart.
+
+### `get_boot_time_epoch() -> float | None`
+Computes approximate boot epoch from current time minus uptime.
+
+**Why:** migration from 0.0.1 has no stored boot ID; boot time lets the code decide whether existing command state clearly belongs to an earlier boot.
+
+### `parse_timestamp(value) -> float | None`
+Parses the existing ISO-style timestamp to epoch seconds.
+
+### `load_history() -> list[dict]`
+Reads and validates `state/history.json`; malformed/missing history safely behaves as empty.
+
+### `save_history(entries) -> None`
+Keeps only the newest `HISTORY_MAX_ENTRIES`, writes formatted JSON via temporary file, and atomically replaces `history.json`.
+
+**Why:** history persists across reboots without unbounded growth.
+
+### `current_command_record() -> dict | None`
+Builds an archive record from current last-command/result/message/timestamp. Sentinel/empty state returns `None`.
+
+**Why:** boots with no meaningful previous command should not create useless history entries.
+
+### `archive_current_command_status() -> bool`
+Appends the meaningful current command record to history and saves it.
+
+### `clear_current_command_status() -> None`
+Clears current-boot command/result/message and updates `last_updated` to the clearing time.
+
+**Why:** a new boot begins with clean current-command fields while previous data remains in history.
+
+### `is_new_machine_boot(current_boot_id) -> bool`
+Compares stored/current boot IDs. When no stored ID exists yet, it falls back to comparing existing `last_updated` against calculated current boot time.
+
+**Why:** avoids false history rollover on service restarts and handles upgrades from 0.0.1 safely.
+
+### `initialize_boot_state() -> bool`
+Performs boot transition handling: archive old command state, clear current fields, reset action to `idle`, and save the current boot ID. Returns whether a new boot was detected.
+
+### `publish(topic, payload, retain=True, qos=1) -> None`
+Publishes through the active Paho client and ignores empty topic strings.
+
+### `publish_history() -> None`
+Serializes the capped history list to compact JSON and publishes it retained on `status_history` when configured.
+
+### `publish_command_status() -> None`
+Publishes retained current command/result/message/update values.
+
+### `on_connect(*args)`
+Publishes online state, action, hostname, current command status, and retained history after each MQTT connection.
+
+**Why:** panel state/history repopulates after panel or broker reconnects.
+
+### `on_disconnect(*args)`
+Current no-op callback placeholder.
+
+### `uptime_loop()`
+Periodically republishes retained online state and uptime.
+
+### `action_sync_loop()`
+Polls the local action file and republishes only when the value changes.
+
+### `command_status_sync_loop()`
+Polls current command files and republishes the retained set whenever it changes.
+
+### `build_client()`
+Creates compatible Paho MQTT client.
+
+### `main() -> int`
+Creates runtime directories/default action, initializes boot/history state, creates missing current-state defaults, configures MQTT/LWT, starts sync threads, handles SIGTERM/SIGINT, and publishes offline before clean shutdown.
+
+---
+
+## `homelab_control_lib.sh`
+Shared remote script helper.
+
+### `json_get()`
+Reads a dotted path from `config.json` using Python JSON parsing.
+
+### `ensure_dirs()`
+Creates state/log directories.
+
+### `timestamp_now()`
+Returns local ISO-like date/time.
+
+### `mqtt_pub(topic, payload)`
+Publishes a retained QoS 1 status value using configured broker credentials.
+
+### `write_action(value)`
+Writes the local action file.
+
+### `write_command_status(command, result, message)`
+Writes current command/result/message/time, appends `logs/commands.log`, and publishes all four retained status topics.
+
+### `set_idle()`
+Writes/publishes `idle`.
+
+### `set_shutdown_pending()`
+Writes/publishes `shutdown_pending`.
+
+### `set_reboot_pending()`
+Writes/publishes `reboot_pending`.
+
+---
+
+## Remote action scripts
+
+### `scripts/shutdown_delay.sh`
+Sets `shutdown_pending`, records running state, requests shutdown in one minute, and records success/failure.
+
+### `scripts/shutdown_cancel.sh`
+Runs `shutdown -c`, sets idle on success, and records result.
+
+### `scripts/reboot_delay.sh`
+Sets `reboot_pending`, records running state, requests reboot in one minute, and records success/failure.
+
+### `scripts/reboot_cancel.sh`
+Runs `shutdown -c`, sets idle on success, and records result.
+
+## Remote systemd units
+
+### `homelab-control-command-listener.service`
+Runs the remote command listener as root using deployment-specific paths.
+
+### `homelab-control-status-indicator.service`
+Runs the remote status/history publisher as root using deployment-specific paths.
+
+---
+
+# Command interfaces
+
+## Panel-control MQTT JSON
+Topic: `MQTT_CONFIG["panel_control_topic"]`.
+
+Required keys:
+
+- `device_id`
+- `command`
+
+Recognized command names:
+
+- `power_on`
+- `shutdown`
+- `shutdown_delay`
+- `shutdown_cancel`
+- `reboot`
+- `reboot_delay`
+- `reboot_cancel`
+
+`shutdown` and `reboot` are aliases to the configured delayed controls. Retained incoming panel-control messages are rejected.
+
+## Direct remote-agent MQTT payloads
+Default allow-list:
+
+- `shutdown_delay`
+- `shutdown_cancel`
+- `reboot_delay`
+- `reboot_cancel`
+
+## External OS commands used
+
+- `mosquitto_pub`
+- `wakeonlan`
+- `ping`
+- `shutdown -h +1 ...`
+- `shutdown -r +1 ...`
+- `shutdown -c`
+- `sudo` for local panel helper scripts
+
+## CLI flags
+There are no supported CLI flags, subcommands, or positional runtime arguments in version 0.0.2. Configuration remains file-based.
