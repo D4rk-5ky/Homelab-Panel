@@ -116,6 +116,21 @@
       font-size: 14px;
     }
 
+    .account-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .logout-button {
+      width: auto;
+      padding: 8px 12px;
+      background: #374151;
+      font-size: 14px;
+    }
+
     .history-link {
       display: inline-block;
       margin-top: 10px;
@@ -161,6 +176,15 @@
   <div class="wrap">
     <h1>⚙️ Homelab Kontrolpanel</h1>
     <p class="muted">Opdateret: {{ now }} · Auto-opdatering: {{ page_refresh_seconds }} sekunder</p>
+
+    {% if web_auth_enabled %}
+      <div class="account-bar">
+        <span class="muted">Logget ind som {{ logged_in_username }}</span>
+        <form method="post" action="{{ url_for('logout') }}">
+          <button class="logout-button" type="submit">Log ud</button>
+        </form>
+      </div>
+    {% endif %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}

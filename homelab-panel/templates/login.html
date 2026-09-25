@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8">
+  <title>Login · Homelab Kontrolpanel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔐</text></svg>">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #111827;
+      color: #f3f4f6;
+    }
+
+    .card {
+      width: min(420px, calc(100% - 40px));
+      box-sizing: border-box;
+      background: #1f2937;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 14px rgba(0,0,0,.35);
+    }
+
+    h1 { margin-top: 0; }
+
+    label {
+      display: block;
+      margin-top: 14px;
+      margin-bottom: 6px;
+      font-weight: bold;
+    }
+
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #4b5563;
+      border-radius: 9px;
+      padding: 12px;
+      background: #111827;
+      color: #f3f4f6;
+      font-size: 16px;
+    }
+
+    button {
+      width: 100%;
+      margin-top: 18px;
+      border: 0;
+      border-radius: 10px;
+      padding: 13px;
+      background: #059669;
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover { filter: brightness(1.08); }
+
+    .error {
+      border-radius: 9px;
+      padding: 10px;
+      margin-bottom: 14px;
+      background: #7f1d1d;
+      color: #fee2e2;
+    }
+
+    .muted {
+      color: #9ca3af;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔐 Homelab Kontrolpanel</h1>
+    <p class="muted">Log ind for at åbne kontrolpanelet.</p>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('login') }}">
+      <label for="username">Brugernavn</label>
+      <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+
+      <label for="password">Adgangskode</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+      <button type="submit">Log ind</button>
+    </form>
+  </div>
+</body>
+</html>

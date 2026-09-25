@@ -47,6 +47,28 @@
       font-weight: bold;
     }
 
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .top-bar .back-link {
+      margin-bottom: 0;
+    }
+
+    .logout-button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: #374151;
+      color: #f3f4f6;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
     .history-list {
       display: grid;
       gap: 10px;
@@ -73,7 +95,14 @@
 </head>
 <body>
   <div class="wrap">
-    <a class="back-link" href="{{ url_for('index', token=token) }}">← Tilbage til kontrolpanel</a>
+    <div class="top-bar">
+      <a class="back-link" href="{{ url_for('index', token=token) }}">← Tilbage til kontrolpanel</a>
+      {% if web_auth_enabled %}
+        <form method="post" action="{{ url_for('logout') }}">
+          <button class="logout-button" type="submit">Log ud · {{ logged_in_username }}</button>
+        </form>
+      {% endif %}
+    </div>
 
     <h1>🕘 Historik · {{ device.title }}</h1>
     <p class="muted">Vist: {{ now }}</p>

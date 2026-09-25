@@ -4,31 +4,102 @@ import os
 import subprocess
 import threading
 import time
+import hmac
 from datetime import datetime
 
-from flask import Flask, render_template, redirect, url_for, flash, request
+from flask import Flask, render_template, redirect, url_for, flash, request, session
 import paho.mqtt.client as mqtt
 
 from config import (
     WOL_BROADCAST,
     MQTT_CONFIG,
     PANEL_TOKEN,
-    LOCAL_SCRIPT_PATH,
     MQTT_ONLINE_TTL_SECONDS,
     PAGE_REFRESH_SECONDS,
 )
 from devices import REMOTE_DEVICES, LOCAL_SERVER
 
+try:
+    from config import WEB_AUTH_CONFIG
+except ImportError:
+    WEB_AUTH_CONFIG = {
+        "enabled": False,
+        "username": "",
+        "password": "",
+        "secret_key": "SKIFT_DENNE_TIL_EN_LANG_TILFÆLDIG_HEMMELIG_NØGLE",
+        "session_cookie_secure": False,
+    }
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(APP_DIR)
+LEGACY_FALLBACK_SECRET_KEY = "SKIFT_DENNE_TIL_EN_LANG_TILFÆLDIG_HEMMELIG_NØGLE"
+
 app = Flask(__name__)
-app.secret_key = "SKIFT_DENNE_TIL_EN_LANG_TILFÆLDIG_HEMMELIG_NØGLE"
+app.config.update(
+    SECRET_KEY=str(WEB_AUTH_CONFIG.get("secret_key", "") or LEGACY_FALLBACK_SECRET_KEY),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(WEB_AUTH_CONFIG.get("session_cookie_secure", False)),
+)
 
 MQTT_STATE = {}
 MQTT_STATE_LOCK = threading.Lock()
+PANEL_ACTION_STATE = {}
+PANEL_ACTION_STATE_LOCK = threading.Lock()
 MQTT_CLIENT = None
 MQTT_CONNECTED = False
 
 
+def web_auth_enabled() -> bool:
+    return bool(WEB_AUTH_CONFIG.get("enabled", False))
+
+
+def validate_web_auth_config() -> None:
+    secret_key = str(WEB_AUTH_CONFIG.get("secret_key", ""))
+
+    if not web_auth_enabled():
+        return
+
+    username = str(WEB_AUTH_CONFIG.get("username", ""))
+    password = str(WEB_AUTH_CONFIG.get("password", ""))
+
+    if not username or not password or not secret_key:
+        raise RuntimeError("WEB_AUTH_CONFIG username/password/secret_key må ikke være tomme når web-login er aktiveret")
+
+    if "CHANGE_ME" in password or "CHANGE_ME" in secret_key:
+        raise RuntimeError("Skift WEB_AUTH_CONFIG password og secret_key før web-login aktiveres")
+
+
+def session_authenticated() -> bool:
+    return session.get("authenticated") is True
+
+
+def credentials_match(username: str, password: str) -> bool:
+    configured_username = str(WEB_AUTH_CONFIG.get("username", ""))
+    configured_password = str(WEB_AUTH_CONFIG.get("password", ""))
+
+    username_ok = hmac.compare_digest(username.encode("utf-8"), configured_username.encode("utf-8"))
+    password_ok = hmac.compare_digest(password.encode("utf-8"), configured_password.encode("utf-8"))
+    return username_ok and password_ok
+
+
+@app.before_request
+def require_web_login():
+    if not web_auth_enabled():
+        return None
+
+    if request.endpoint in {"login", "static"}:
+        return None
+
+    if not session_authenticated():
+        return redirect(url_for("login"))
+
+    return None
+
+
 def check_token() -> bool:
+    if web_auth_enabled():
+        return True
     if not PANEL_TOKEN:
         return True
     return request.args.get("token", "") == PANEL_TOKEN
@@ -86,7 +157,7 @@ def send_wol(mac: str) -> tuple[bool, str]:
 
 
 def run_local_script(script_name: str) -> tuple[bool, str]:
-    script_path = os.path.join(LOCAL_SCRIPT_PATH, script_name)
+    script_path = os.path.join(PROJECT_ROOT, script_name)
 
     if not os.path.isfile(script_path):
         return False, f"Script findes ikke: {script_path}"
@@ -158,6 +229,7 @@ def result_to_danish(payload: str | None) -> str:
         "none": "Ingen",
         "unknown": "Ukendt",
         "running": "Kører",
+        "sent": "Afsendt",
         "success": "Succes",
         "failure": "Fejl",
     }
@@ -167,7 +239,60 @@ def result_to_danish(payload: str | None) -> str:
 def command_to_danish(payload: str | None) -> str:
     if not payload or payload.lower() in {"none", "unknown"}:
         return "Ingen"
-    return payload
+
+    mapping = {
+        "power_on": "Tænd / Wake-on-LAN",
+        "shutdown": "Sluk om 1 minut",
+        "shutdown_delay": "Sluk om 1 minut",
+        "shutdown_cancel": "Annullér slukning/genstart",
+        "reboot": "Genstart om 1 minut",
+        "reboot_delay": "Genstart om 1 minut",
+        "reboot_cancel": "Annullér slukning/genstart",
+    }
+    return mapping.get(payload, payload)
+
+
+def record_panel_action(
+    device_id: str,
+    command: str,
+    ok: bool,
+    message: str,
+    source: str,
+    event_epoch: float,
+    event_timestamp: str,
+) -> None:
+    if device_id not in REMOTE_DEVICES:
+        return
+
+    with PANEL_ACTION_STATE_LOCK:
+        PANEL_ACTION_STATE[device_id] = {
+            "command": command,
+            "result": "sent" if ok else "failure",
+            "message": f"{source}: {message}",
+            "timestamp": event_timestamp,
+            "recorded_at": event_epoch,
+        }
+
+
+def get_panel_action_state(device_id: str) -> dict | None:
+    with PANEL_ACTION_STATE_LOCK:
+        state = PANEL_ACTION_STATE.get(device_id)
+        return dict(state) if state else None
+
+
+def get_remote_command_state_received_at(status_cfg: dict) -> float:
+    received_at = 0.0
+    for key in (
+        "last_command_topic",
+        "last_result_topic",
+        "last_message_topic",
+        "last_updated_topic",
+    ):
+        topic = status_cfg.get(key, "").strip()
+        state = get_mqtt_state(topic)
+        if state:
+            received_at = max(received_at, float(state.get("timestamp", 0.0)))
+    return received_at
 
 
 def get_device_history(device: dict) -> list[dict]:
@@ -202,7 +327,7 @@ def get_device_history(device: dict) -> list[dict]:
     return list(reversed(entries))
 
 
-def evaluate_remote_device_status(device: dict) -> dict:
+def evaluate_remote_device_status(device_id: str, device: dict) -> dict:
     wol_cfg = device.get("wol", {})
     status_cfg = device.get("status", {})
 
@@ -236,6 +361,24 @@ def evaluate_remote_device_status(device: dict) -> dict:
     else:
         mqtt_info = mqtt_power_payload
 
+    panel_action = get_panel_action_state(device_id)
+    remote_command_received_at = get_remote_command_state_received_at(status_cfg)
+    use_panel_action = bool(
+        panel_action
+        and float(panel_action.get("recorded_at", 0.0)) > remote_command_received_at
+    )
+
+    if use_panel_action:
+        display_last_command = command_to_danish(str(panel_action.get("command", "")))
+        display_last_result = result_to_danish(str(panel_action.get("result", "")).lower() or None)
+        display_last_message = str(panel_action.get("message") or "Ingen")
+        display_last_updated = str(panel_action.get("timestamp") or "Ukendt")
+    else:
+        display_last_command = command_to_danish(last_command_payload)
+        display_last_result = result_to_danish(last_result_payload.lower() if last_result_payload else None)
+        display_last_message = last_message_payload or "Ingen"
+        display_last_updated = last_updated_payload or "Ukendt"
+
     return {
         "overall": overall,
         "overall_text": overall_text,
@@ -245,10 +388,10 @@ def evaluate_remote_device_status(device: dict) -> dict:
         "mqtt_info": mqtt_info,
         "mqtt_online_ok": mqtt_online_ok,
         "action_text": action_to_danish(action_payload.lower() if action_payload else None),
-        "last_command": command_to_danish(last_command_payload),
-        "last_result": result_to_danish(last_result_payload.lower() if last_result_payload else None),
-        "last_message": last_message_payload or "Ingen",
-        "last_updated": last_updated_payload or "Ukendt",
+        "last_command": display_last_command,
+        "last_result": display_last_result,
+        "last_message": display_last_message,
+        "last_updated": display_last_updated,
         "ip": ip,
     }
 
@@ -256,7 +399,7 @@ def evaluate_remote_device_status(device: dict) -> dict:
 def build_remote_device_statuses() -> dict:
     result = {}
     for device_id, device in REMOTE_DEVICES.items():
-        result[device_id] = evaluate_remote_device_status(device)
+        result[device_id] = evaluate_remote_device_status(device_id, device)
     return result
 
 
@@ -272,7 +415,10 @@ def execute_remote_action(device_id: str, command: str) -> tuple[bool, str]:
         mac = wol_cfg.get("mac", "").strip()
         if not mac:
             return False, f"Wake-on-LAN MAC mangler for {device['title']}"
-        return send_wol(mac)
+        ok, message = send_wol(mac)
+        if ok:
+            return True, f"Wake-on-LAN magic packet sendt til {device['title']}"
+        return False, message
 
     command_aliases = {
         "shutdown": "shutdown_delay",
@@ -293,7 +439,30 @@ def execute_remote_action(device_id: str, command: str) -> tuple[bool, str]:
     if not topic or not payload:
         return False, f"Ufuldstændig MQTT-konfiguration for handling '{command}'"
 
-    return mqtt_publish(topic, payload)
+    ok, message = mqtt_publish(topic, payload)
+    if ok:
+        return True, f"MQTT payload '{payload}' sendt til '{topic}'"
+    return False, message
+
+
+def execute_and_record_remote_action(
+    device_id: str,
+    command: str,
+    source: str,
+) -> tuple[bool, str]:
+    event_epoch = time.time()
+    event_timestamp = datetime.now().isoformat(timespec="seconds")
+    ok, message = execute_remote_action(device_id, command)
+    record_panel_action(
+        device_id,
+        command,
+        ok,
+        message,
+        source,
+        event_epoch,
+        event_timestamp,
+    )
+    return ok, message
 
 
 def process_panel_control_message(payload: str) -> None:
@@ -313,7 +482,12 @@ def process_panel_control_message(payload: str) -> None:
         print("Homelab-panel control rejected: device_id and command are required", flush=True)
         return
 
-    ok, message = execute_remote_action(device_id, command)
+    panel_control_topic = MQTT_CONFIG.get("panel_control_topic", "").strip() or "panel-control"
+    ok, message = execute_and_record_remote_action(
+        device_id,
+        command,
+        f"MQTT {panel_control_topic}",
+    )
     outcome = "success" if ok else "failure"
     print(
         f"Homelab-panel control {outcome}: device_id={device_id} command={command} message={message}",
@@ -415,6 +589,39 @@ def start_mqtt_listener() -> None:
         print(f"MQTT listener kunne ikke starte: {exc}", flush=True)
 
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not web_auth_enabled():
+        return redirect(url_for("index"))
+
+    if session_authenticated():
+        return redirect(url_for("index"))
+
+    error = ""
+
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+
+        if credentials_match(username, password):
+            session.clear()
+            session["authenticated"] = True
+            session["username"] = str(WEB_AUTH_CONFIG.get("username", ""))
+            return redirect(url_for("index"))
+
+        error = "Forkert brugernavn eller adgangskode."
+
+    return render_template("login.html", error=error)
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    if web_auth_enabled():
+        return redirect(url_for("login"))
+    return redirect(url_for("index"))
+
+
 @app.route("/")
 def index():
     if not check_token():
@@ -430,6 +637,8 @@ def index():
         page_refresh_seconds=PAGE_REFRESH_SECONDS,
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         token=request.args.get("token", ""),
+        web_auth_enabled=web_auth_enabled(),
+        logged_in_username=session.get("username", ""),
     )
 
 
@@ -449,6 +658,8 @@ def device_history(device_id: str):
         history=get_device_history(device),
         token=request.args.get("token", ""),
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        web_auth_enabled=web_auth_enabled(),
+        logged_in_username=session.get("username", ""),
     )
 
 
@@ -462,7 +673,7 @@ def wol(device_id: str):
         flash("Ukendt WoL-enhed.", "error")
         return redirect(url_for("index", token=request.args.get("token", "")))
 
-    ok, msg = execute_remote_action(device_id, "power_on")
+    ok, msg = execute_and_record_remote_action(device_id, "power_on", "Webpanel")
 
     if ok:
         flash(f"Wake-on-LAN sendt til {device['title']}: {msg}", "success")
@@ -482,7 +693,7 @@ def mqtt_button(device_id: str, button_id: str):
         flash("Ukendt remote enhed.", "error")
         return redirect(url_for("index", token=request.args.get("token", "")))
 
-    ok, msg = execute_remote_action(device_id, button_id)
+    ok, msg = execute_and_record_remote_action(device_id, button_id, "Webpanel")
 
     if ok:
         flash(f"MQTT-handling sendt til {device['title']}: '{button_id}'", "success")
@@ -513,7 +724,9 @@ def local_button(button_id: str):
 
 
 if __name__ == "__main__":
+    validate_web_auth_config()
     start_mqtt_listener()
     app.run(host="0.0.0.0", port=5000)
 else:
+    validate_web_auth_config()
     start_mqtt_listener()

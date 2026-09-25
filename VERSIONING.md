@@ -24,6 +24,96 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.6 — 2026-09-25
+
+### Panel-control actions now appear in Remote enhedsstatus
+
+- Fixed incoming `MQTT_CONFIG["panel_control_topic"]` actions being executed/logged without any immediate visible information in Homelab Panel.
+- Added a thread-safe per-device provisional panel-action state for actions initiated through either incoming panel MQTT control or the web panel's remote WoL/MQTT buttons.
+- Added `execute_and_record_remote_action()` so web and MQTT entry points reuse one dispatch-and-record path rather than duplicating status handling.
+- Successful panel dispatch is represented as protocol result `sent`, displayed as Danish `Afsendt`; this intentionally means the WoL/MQTT command was sent, not that the remote operation has completed.
+- Added friendly display mappings for `power_on`, shutdown/cancel, and reboot/cancel panel command names.
+- Improved successful dispatch messages so WoL reports a magic packet sent to the selected device and remote MQTT controls report the configured payload/topic that was published.
+- `evaluate_remote_device_status()` now prefers a newer provisional panel action over older remote command status, then automatically returns to the real remote-agent fields as soon as newer remote command state is received.
+- The comparison uses the panel's local MQTT receipt/event times instead of comparing clocks across separate homelab machines.
+- Provisional panel action state is intentionally in-memory only; a panel restart clears it, while retained remote-agent status/history is unchanged.
+- No remote command allow-list, retained-control rejection, website authentication, shutdown/reboot safety behavior, or history format was weakened or removed.
+
+### Documentation
+
+- Updated `README.md` to explain exactly what an incoming `homelab-panel/control` command displays and the difference between `Afsendt` and a confirmed remote result.
+- Updated `commented_code_map.md` for the new panel-action state helpers and revised status-selection/dispatch flow.
+- Updated `VERSION` to `0.0.6`.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.5 project before modification.
+- Python compile/syntax checks.
+- Targeted offline tests with stubbed Flask/Paho and command execution verified that older retained/current remote state is temporarily overlaid by a newer panel `power_on`, successful dispatch displays `Afsendt`, failure displays `Fejl`, and a newer real remote-agent state supersedes the provisional panel state.
+- Verified the incoming JSON MQTT control path records `device_id`, command, configured panel-control topic source, result, message, and timestamp.
+- Shell/JSON/Jinja/systemd and final ZIP cleanliness/manifest checks repeated for the finished release.
+- A real MQTT broker, actual WoL target, and destructive shutdown/reboot operations were not used during release testing.
+
+## 0.0.5 — 2026-09-25
+
+### Optional website username/password authentication
+
+- Added optional `WEB_AUTH_CONFIG` to `homelab-panel/config.example.py` with `enabled`, `username`, `password`, `secret_key`, and `session_cookie_secure`.
+- Added a global Flask `before_request` authentication guard so, when enabled, all current and future web page/control routes require an authenticated session except the login/static endpoints.
+- Added `GET/POST /login` with generic failed-login feedback and constant-time username/password comparison via `hmac.compare_digest`.
+- Added `POST /logout` and logout controls to the dashboard and device-history page.
+- The signed session stores only an authenticated flag and username; the password is not stored in the session or URL.
+- Configured session cookies as `HttpOnly` and `SameSite=Lax`; optional `session_cookie_secure` is available for HTTPS deployments.
+- Added startup validation that rejects empty auth credentials and unchanged `CHANGE_ME` password/session-secret placeholders when login is enabled.
+- Preserved upgrade compatibility: an existing 0.0.4 `config.py` without `WEB_AUTH_CONFIG` continues with web login disabled.
+- Preserved the legacy `PANEL_TOKEN` gate when web login is disabled. When web login is enabled, the session replaces the query-string token so users are not required to pass both.
+- Added `homelab-panel/templates/login.html`.
+- MQTT control/authentication is unchanged and remains governed by broker authentication/ACLs rather than the website session.
+- No Wake-on-LAN, MQTT dispatch, shutdown/reboot, history, or remote-agent behavior was changed.
+
+### Documentation/configuration
+
+- Updated `README.md` for current 0.0.5 login setup, routes, upgrade behavior, and security limitations.
+- Updated `commented_code_map.md` for all new authentication functions/routes/template behavior.
+- Updated `VERSION` to `0.0.5`.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.4 project before modification.
+- Python compile/syntax checks.
+- Shell `bash -n`, JSON parse, Jinja template parse, and systemd unit checks repeated.
+- Offline auth-flow tests with stubbed Flask/Paho interfaces verified: enabled/disabled auth, unauthenticated protection for all existing control/page endpoints plus a simulated future endpoint, correct and failed login, UTF-8 credentials, logout/session clearing, legacy `PANEL_TOKEN` behavior, old-config fallback, cookie settings, and fail-closed credential/secret validation.
+- Verified `commented_code_map.md` covers all current Python and shell functions and README covers all panel config-example fields.
+- Rechecked `.gitignore` behavior: local active configs are ignored while all three example configs remain trackable.
+- Compared the final manifest with 0.0.4 and accounted for every changed/new file; no original project files were removed.
+- Flask/Paho runtime packages were not available in the execution environment and could not be installed because outbound package access was unavailable, so a real Flask test-client/browser session against the actual Flask package could not be performed here.
+- Final ZIP scanned for forbidden Python bytecode/cache and temporary artifacts.
+
+## 0.0.4 — 2026-09-25
+
+### Shared script location
+
+- Consolidated the four shutdown/reboot action scripts into the project root, beside `homelab-panel/` and `homelab-control/`.
+- Removed the duplicate `homelab-panel/scripts/` and `homelab-control/scripts/` copies.
+- Added `homelab_action_common.sh` so both panel and remote-agent execution reuse one privilege/status integration path.
+- `homelab-panel/app.py` now derives the common project root from its own `__file__` location and no longer requires `LOCAL_SCRIPT_PATH`.
+- `homelab-control/homelab_control_command_listener.py` now derives the same common project root from its own `__file__` location.
+- Root execution continues to use direct `shutdown` and existing remote status/MQTT helpers when an active remote config exists; non-root panel execution continues to use `sudo shutdown`.
+- Removed `LOCAL_SCRIPT_PATH` from `config.example.py` because script discovery is automatic.
+- Updated README/current-use documentation and `commented_code_map.md` for the shared layout and all affected functions/scripts.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.3 project before modification.
+- Python compile/syntax checks.
+- Shell `bash -n` checks for all shell files.
+- JSON and Python example-config parsing/compile checks.
+- Verified both Python callers resolve action scripts to the same parent directory independent of current working directory.
+- Verified root/shared action-script status integration with command stubs so no real shutdown/reboot was performed.
+- Verified non-root action path selects `sudo shutdown` through a stubbed environment.
+- Compared the final manifest with 0.0.3 and accounted for each moved/added/removed file.
+- Final ZIP scanned for forbidden Python bytecode/cache and temporary artifacts.
+
 ## 0.0.3 — 2026-09-25
 
 ### Configuration files and Git hygiene

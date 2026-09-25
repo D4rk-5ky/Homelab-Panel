@@ -1,6 +1,6 @@
 # Homelab Panel
 
-**Current version: 0.0.3**
+**Current version: 0.0.6**
 
 Homelab Panel is a Flask-based homelab control panel plus an MQTT-driven remote control/status agent.
 
@@ -8,6 +8,7 @@ The project has two parts:
 
 - `homelab-panel/` — web panel, Wake-on-LAN sender, MQTT status listener, MQTT control receiver, and local shutdown/reboot controls.
 - `homelab-control/` — remote MQTT agent that executes only configured command scripts and publishes retained device/status/history information.
+- project-root action scripts — one shared set of shutdown/reboot helpers located beside `homelab-panel/` and `homelab-control/`.
 
 ## ⚠️ Disclaimer / Liability
 
@@ -41,17 +42,19 @@ You are responsible for reviewing the code, testing it in a safe environment, ma
 The panel:
 
 - serves a Flask web UI on `0.0.0.0:5000` when `app.py` is run directly;
-- optionally checks a query-string token before allowing web access/actions;
+- optionally protects every web page and web control route with a username/password login session;
+- keeps the legacy query-string token available when username/password login is disabled;
 - pings configured remote devices;
 - listens for retained MQTT power/action/command/result/message/history state;
 - considers a device online only when both ping succeeds and a fresh MQTT power state equals `online`;
 - sends Wake-on-LAN through the external `wakeonlan` command;
 - publishes configured remote control payloads through `mosquitto_pub`;
 - accepts a dedicated MQTT control topic so another MQTT client, such as Home Assistant, can tell the panel to power on, shut down, cancel shutdown, reboot, or cancel reboot for a configured remote device;
+- immediately shows panel-originated web/MQTT actions in the existing `Sidste kommando`, `Sidste resultat`, `Sidste besked`, and `Sidst opdateret` status fields; successful dispatch is shown as `Afsendt` until a newer real remote-agent command status arrives;
 - rejects retained incoming panel-control messages so an old destructive command is not replayed after reconnect;
 - exposes a History button in every remote-device status card;
 - displays remote history in separate Command, Result, and Message categories with the original date/time;
-- runs configured local shutdown/reboot scripts;
+- runs configured local shutdown/reboot scripts from the common project root;
 - refreshes the main browser page automatically at the configured interval.
 
 ### Remote agent
@@ -60,7 +63,7 @@ The remote agent consists of two Python services plus shared shell helpers:
 
 - `homelab_control_command_listener.py` subscribes to `topics.control_power`. Only payloads present in `commands` can launch a script.
 - `homelab_control_status_indicator.py` publishes retained power/action/hostname/uptime/current-command state plus retained command history.
-- `homelab_control_lib.sh` is sourced by the remote shutdown/reboot scripts and writes current status plus a runtime command log.
+- `homelab_action_common.sh` is shared by all four root action scripts. When a script is executed as root and an active `homelab-control/config.json` exists, it reuses `homelab_control_lib.sh` so remote status/history behavior is preserved.
 
 On a real machine reboot, the status indicator:
 
@@ -77,7 +80,24 @@ Restarting only the status service during the same Linux boot does **not** creat
 
 For migration from a version that did not yet store `boot_id`, the agent compares `last_updated` with the current Linux boot time. It archives only when the existing status clearly predates the current boot.
 
-## 2. Dependencies
+## 2. Project layout
+
+Keep the two application directories and the shared action scripts under the same parent directory:
+
+```text
+Homelab-Panel/
+├── homelab-panel/
+├── homelab-control/
+├── homelab_action_common.sh
+├── shutdown_delay.sh
+├── shutdown_cancel.sh
+├── reboot_delay.sh
+└── reboot_cancel.sh
+```
+
+`homelab-panel/app.py` and `homelab-control/homelab_control_command_listener.py` locate the shared scripts from their own `__file__` path, not from the current shell directory or a configured absolute path. This means the layout can be moved as a unit without editing a script directory setting.
+
+## 3. Dependencies
 
 ### Common Linux commands
 
@@ -114,9 +134,9 @@ System command:
 sudo apt install mosquitto-clients
 ```
 
-The supplied remote units run as root because the remote scripts invoke `shutdown` directly. Review this before installation.
+The supplied remote units run as root because the shared root action scripts invoke `shutdown` directly when executed by the remote command listener. When the same scripts are launched by a non-root panel process, they invoke `sudo shutdown`. Review sudo/root permissions before installation.
 
-## 3. Panel configuration
+## 4. Panel configuration
 
 The active panel configuration files are intentionally **not shipped or tracked**, because they contain machine-specific settings and may contain credentials. Create them from the supplied examples before starting the panel:
 
@@ -156,11 +176,23 @@ Edit the newly created local files for your environment. Git ignores `homelab-pa
 `MQTT_CONFIG["panel_control_topic"]`
 : Topic the panel subscribes to for JSON control requests. Set it to an empty string to disable MQTT control of the panel.
 
-`PANEL_TOKEN`
-: Optional web query-string token. Empty disables token checking.
+`WEB_AUTH_CONFIG["enabled"]`
+: Enables/disables username/password protection for the website. `False` keeps the previous behavior. `True` requires a valid login session before any panel/history/control route is accessible.
 
-`LOCAL_SCRIPT_PATH`
-: Absolute directory containing the local panel helper scripts.
+`WEB_AUTH_CONFIG["username"]`
+: Username accepted by `/login`.
+
+`WEB_AUTH_CONFIG["password"]`
+: Password accepted by `/login`. Keep the active `config.py` private and choose a strong password. The password is compared in memory and is not stored in the browser session.
+
+`WEB_AUTH_CONFIG["secret_key"]`
+: Flask session-signing secret. Replace the example placeholder with a long random value before enabling web login. The application refuses to start with web login enabled while the example `CHANGE_ME` password/secret remains.
+
+`WEB_AUTH_CONFIG["session_cookie_secure"]`
+: Set `True` only when the panel is accessed over HTTPS. Leave `False` for direct plain-HTTP LAN access, otherwise the browser will not return the session cookie. Session cookies are also configured `HttpOnly` and `SameSite=Lax`.
+
+`PANEL_TOKEN`
+: Legacy optional query-string token. It is used only while `WEB_AUTH_CONFIG["enabled"]` is `False`. Empty disables token checking. When username/password login is enabled, the login session replaces the query-string token so both are not required at once.
 
 `MQTT_ONLINE_TTL_SECONDS`
 : Maximum age of the last received MQTT power message before it is treated as stale.
@@ -229,7 +261,41 @@ Local panel action definitions. Each button contains:
 - `icon`
 - `confirm`
 
-## 4. Remote-agent configuration
+## 5. Web login
+
+Username/password login is optional and disabled by default. Configure it in the local `homelab-panel/config.py` copied from `config.example.py`:
+
+```python
+WEB_AUTH_CONFIG = {
+    "enabled": True,
+    "username": "admin",
+    "password": "YOUR_STRONG_PASSWORD",
+    "secret_key": "YOUR_LONG_RANDOM_SECRET_KEY",
+    "session_cookie_secure": False,
+}
+```
+
+Generate a suitable random session secret, for example:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_hex(32))'
+```
+
+With `enabled=True`:
+
+1. opening `/`, `/history/...`, or any web control endpoint redirects an unauthenticated browser to `/login`;
+2. `/login` is the only application page available before authentication;
+3. a successful login stores only an authenticated flag and username in the signed Flask session cookie;
+4. the password is never put in the URL or stored in the session;
+5. the **Log ud** button clears the session;
+6. the login cookie is a browser-session cookie unless deployment code changes Flask's session lifetime behavior;
+7. the legacy `PANEL_TOKEN` is not additionally required.
+
+If a local `config.py` does not contain `WEB_AUTH_CONFIG`, the application treats username/password login as disabled. Add the block from `config.example.py` when you want to enable it.
+
+This is intentionally simple application authentication. It does not provide TLS encryption or login rate limiting. Use HTTPS/reverse-proxy protection when traffic leaves a trusted LAN, and do not expose the Flask development server directly to the Internet.
+
+## 6. Remote-agent configuration
 
 The active remote-agent configuration is also intentionally **not shipped or tracked**. Create it from the supplied example on each remote host:
 
@@ -276,7 +342,7 @@ Use unique client IDs for simultaneously connected clients.
 
 #### `commands`
 
-Mapping from received remote-agent payload to a script filename under `homelab-control/scripts/`.
+Mapping from received remote-agent payload to a script filename in the common project root, beside `homelab-panel/` and `homelab-control/`.
 
 Default mapping:
 
@@ -289,7 +355,7 @@ Default mapping:
 
 The remote listener never passes the received payload directly to a shell.
 
-## 5. MQTT control of Homelab Panel
+## 7. MQTT control of Homelab Panel
 
 The panel can receive a JSON object on `MQTT_CONFIG["panel_control_topic"]`.
 
@@ -363,11 +429,22 @@ Add `-u USER -P PASSWORD` when required by the broker.
 
 ### Important retained-message rule
 
-Do **not** publish panel control requests with MQTT retain enabled. Version 0.0.2 explicitly rejects an incoming control message when the MQTT message itself is marked retained.
+Do **not** publish panel control requests with MQTT retain enabled. The panel rejects incoming control messages when the MQTT message itself is marked retained.
 
-MQTT control is not protected by `PANEL_TOKEN`; it is protected by your MQTT broker authentication and ACL rules. Restrict who can publish to the panel control topic.
+MQTT control is separate from the website login and `PANEL_TOKEN`; it is protected by your MQTT broker authentication and ACL rules. Restrict who can publish to the panel control topic.
 
-## 6. Direct remote-agent MQTT control
+### What appears in Remote enhedsstatus
+
+When a valid panel-control message is accepted, Homelab Panel immediately records the dispatch for the selected device. It becomes visible in the existing status card on the next browser page load/automatic refresh:
+
+- `Sidste kommando` shows the requested action, for example `Tænd / Wake-on-LAN`.
+- `Sidste resultat` shows `Afsendt` when Homelab Panel successfully dispatched the WoL packet or MQTT publish. This means **sent**, not that the remote machine has already completed the requested action.
+- `Sidste besked` includes the source (`MQTT <panel_control_topic>` or `Webpanel`) and a useful dispatch message.
+- `Sidst opdateret` is the time the panel action started.
+
+This panel-side status is provisional and held in panel memory. If the remote agent later publishes newer `last_command`, `last_result`, `last_message`, and `last_updated` state, that real remote status automatically replaces the provisional panel result. A Homelab Panel process restart also clears the provisional in-memory panel action. Retained remote-agent status/history remains unaffected.
+
+## 8. Direct remote-agent MQTT control
 
 You can still publish directly to a remote agent without going through the panel:
 
@@ -378,7 +455,7 @@ mosquitto_pub -h YOUR_BROKER -t 'aoostar/control/power' -m 'reboot_delay'
 mosquitto_pub -h YOUR_BROKER -t 'aoostar/control/power' -m 'reboot_cancel'
 ```
 
-## 7. Command history
+## 9. Command history
 
 The remote agent stores history in:
 
@@ -410,7 +487,7 @@ The history page displays three separate categories:
 
 Every displayed value includes the original `timestamp`.
 
-## 8. Commands and flags
+## 10. Commands and flags
 
 ### No CLI flags
 
@@ -437,23 +514,18 @@ cd homelab-control
 python3 homelab_control_status_indicator.py
 ```
 
-### Remote scripts
+### Shared shutdown/reboot scripts
+
+The scripts are located in the same directory that contains `homelab-panel/` and `homelab-control/`:
 
 ```bash
-homelab-control/scripts/shutdown_delay.sh
-homelab-control/scripts/shutdown_cancel.sh
-homelab-control/scripts/reboot_delay.sh
-homelab-control/scripts/reboot_cancel.sh
+./shutdown_delay.sh
+./shutdown_cancel.sh
+./reboot_delay.sh
+./reboot_cancel.sh
 ```
 
-### Local panel scripts
-
-```bash
-homelab-panel/scripts/shutdown_delay.sh
-homelab-panel/scripts/shutdown_cancel.sh
-homelab-panel/scripts/reboot_delay.sh
-homelab-panel/scripts/reboot_cancel.sh
-```
+Both the panel and remote command listener derive this directory from their own file location. No absolute script-path setting is required.
 
 ### Observe MQTT
 
@@ -462,19 +534,21 @@ mosquitto_sub -h YOUR_BROKER -t 'aoostar/#' -v
 mosquitto_sub -h YOUR_BROKER -t 'homelab-panel/#' -v
 ```
 
-## 9. Flask routes
+## 11. Flask routes
 
 | Method | Route | Purpose |
 | --- | --- | --- |
+| `GET`, `POST` | `/login` | Public login page when web authentication is enabled. |
+| `POST` | `/logout` | Clear the authenticated browser session. |
 | `GET` | `/` | Main control/status page. |
 | `GET` | `/history/<device_id>` | Per-device history page. |
 | `POST` | `/wol/<device_id>` | Send configured Wake-on-LAN. |
 | `POST` | `/mqtt/<device_id>/<button_id>` | Execute a configured remote MQTT control. |
 | `POST` | `/local/<button_id>` | Execute a configured local helper script. |
 
-When `PANEL_TOKEN` is non-empty, include `?token=...`. Generated panel/history links preserve the current token.
+When `WEB_AUTH_CONFIG["enabled"]` is `True`, all routes except `/login` (and Flask's static endpoint, if used) require an authenticated session. When web login is disabled and `PANEL_TOKEN` is non-empty, include `?token=...`; generated panel/history links preserve the token.
 
-## 10. Status logic
+## 12. Status logic
 
 A device is displayed as Online only when:
 
@@ -487,7 +561,7 @@ Otherwise the device is displayed Offline.
 
 The remote status service uses an MQTT last-will of `offline` and republishes `online` with its uptime heartbeat.
 
-## 11. Runtime files
+## 13. Runtime files
 
 Remote runtime state may include:
 
@@ -504,7 +578,7 @@ homelab-control/logs/commands.log
 
 These machine-specific runtime files are intentionally not included in clean release ZIPs.
 
-## 12. systemd installation
+## 14. systemd installation
 
 Included units:
 
@@ -512,7 +586,7 @@ Included units:
 - `homelab-control/homelab-control-status-indicator.service`
 - `homelab-panel/homelab-controll.service`
 
-Review and edit host-specific paths, users, and groups before installing.
+Review and edit host-specific paths, users, and groups before installing. Keep `homelab-panel/`, `homelab-control/`, and the shared root action scripts under the same parent directory; the Python services derive action-script paths from that layout.
 
 Typical flow:
 
@@ -531,7 +605,7 @@ journalctl -u homelab-control-command-listener.service
 journalctl -u homelab-control-status-indicator.service
 ```
 
-## 13. Security and safety notes
+## 15. Security and safety notes
 
 - Restrict Flask to trusted networks or a properly secured reverse proxy.
 - Use MQTT authentication and ACLs.
@@ -539,12 +613,14 @@ journalctl -u homelab-control-status-indicator.service
 - Never expose the development Flask server or unauthenticated MQTT broker directly to the Internet.
 - Keep panel control messages non-retained.
 - Keep `MQTT_CONFIG["retain"] = False` for destructive device-control payloads unless you fully understand the replay implications.
-- Change the placeholder Flask `app.secret_key`.
-- Treat `PANEL_TOKEN` only as a basic web gate, not full authentication.
+- If web login is enabled, replace both the example web password and `WEB_AUTH_CONFIG["secret_key"]` before startup.
+- Set `session_cookie_secure=True` only behind HTTPS; use HTTPS whenever the panel is exposed beyond a trusted LAN.
+- Username/password login is simple session authentication and has no built-in rate limiting.
+- Treat legacy `PANEL_TOKEN` only as a basic URL gate, not username/password authentication.
 - Review all root/sudo privileges and scripts.
 - Test shutdown, reboot, cancellation, history rollover, and Wake-on-LAN outside production first.
 
-## 14. Project documentation
+## 16. Project documentation
 
 - `README.md` — current usage/configuration/behavior only.
 - `commented_code_map.md` — every current function, route, script, service, command interface, and its purpose.
@@ -552,7 +628,7 @@ journalctl -u homelab-control-status-indicator.service
 - `VERSION` — current release number.
 - `.gitignore` — keeps machine-specific active configuration files out of Git while preserving the three example configuration files.
 
-## 15. Adding a device
+## 17. Adding a device
 
 1. Add the device to `REMOTE_DEVICES`.
 2. Configure Wake-on-LAN if needed.
