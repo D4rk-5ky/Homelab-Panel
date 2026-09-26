@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8"><title>MQTT diagnostics · Homelab Panel</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#111827;color:#f3f4f6}.wrap{max-width:1400px;margin:auto;padding:20px}.card{background:#1f2937;border-radius:12px;padding:18px;margin-bottom:18px}.muted{color:#9ca3af;font-size:14px}.back{display:inline-block;padding:9px 12px;border-radius:8px;background:#374151;color:white;text-decoration:none;font-weight:bold;margin-bottom:15px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:8px;border-bottom:1px solid #374151;vertical-align:top;word-break:break-word}.ok{color:#34d399}.bad{color:#f87171}.scroll{overflow-x:auto}.payload{max-width:520px;white-space:pre-wrap}.device{margin-top:18px}
+</style>
+</head>
+<body><div class="wrap">
+<a class="back" href="{{ url_for('index',token=token) }}">← Tilbage</a>
+<h1>📡 MQTT diagnostics</h1><p class="muted">{{ now }}</p>
+<div class="card">
+<h2>Broker</h2>
+<p>Status: {% if diagnostics.connected %}<span class="ok">Tilsluttet</span>{% else %}<span class="bad">Ikke tilsluttet</span>{% endif %}</p>
+<p>Broker: {{ diagnostics.host }}:{{ diagnostics.port }} · Client ID: {{ diagnostics.client_id }}</p>
+<p>Panel control topic: {{ diagnostics.control_topic }}</p>
+<p>Sidst connected: {{ diagnostics.connection.connected_at or '-' }} · Sidst disconnected: {{ diagnostics.connection.disconnected_at or '-' }} · Årsag: {{ diagnostics.connection.disconnect_reason or '-' }}</p>
+</div>
+<div class="card"><h2>Subscriptions og seneste payload</h2><div class="scroll"><table><tr><th>Topic</th><th>Payload</th><th>Modtaget</th><th>Alder</th><th>Retained</th><th>QoS</th></tr>
+{% for row in diagnostics.topics %}<tr><td>{{ row.topic }}</td><td class="payload">{{ row.payload or '-' }}</td><td>{{ row.received_at or '-' }}</td><td>{% if row.age is not none %}{{ row.age }}s{% else %}-{% endif %}</td><td>{{ row.retain if row.retain is not none else '-' }}</td><td>{{ row.qos if row.qos is not none else '-' }}</td></tr>{% endfor %}
+</table></div></div>
+{% for device_id,rows in diagnostics.devices.items() %}<div class="card device"><h2>{{ remote_devices[device_id].title }} · forventede topics</h2><div class="scroll"><table><tr><th>Felt</th><th>Topic</th><th>Set?</th><th>Seneste payload</th><th>Alder</th></tr>
+{% for row in rows %}<tr><td>{{ row.key }}</td><td>{{ row.topic }}</td><td>{% if row.seen %}<span class="ok">Ja</span>{% else %}<span class="bad">Nej</span>{% endif %}</td><td class="payload">{{ row.payload or '-' }}</td><td>{% if row.age is not none %}{{ row.age }}s{% else %}-{% endif %}</td></tr>{% endfor %}
+</table></div></div>{% endfor %}
+</div></body></html>

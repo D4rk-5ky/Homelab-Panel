@@ -52,6 +52,16 @@ TOPIC_LAST_RESULT = CONFIG["topics"]["status_last_result"]
 TOPIC_LAST_MESSAGE = CONFIG["topics"]["status_last_message"]
 TOPIC_LAST_UPDATED = CONFIG["topics"]["status_last_updated"]
 
+def derive_related_topic(explicit_key: str, suffix: str) -> str:
+    explicit = str(CONFIG["topics"].get(explicit_key, "")).strip()
+    if explicit:
+        return explicit
+    last_message_topic = str(CONFIG["topics"].get("status_last_message", "")).strip()
+    marker = "/last_message"
+    if last_message_topic.endswith(marker):
+        return last_message_topic[:-len(marker)] + suffix
+    return ""
+
 def derive_history_topic() -> str:
     explicit = str(CONFIG["topics"].get("status_history", "")).strip()
     if explicit:
@@ -65,6 +75,8 @@ def derive_history_topic() -> str:
 
 
 TOPIC_HISTORY = derive_history_topic()
+TOPIC_BOOT_ID = derive_related_topic("status_boot_id", "/boot_id")
+TOPIC_BOOT_TIME = derive_related_topic("status_boot_time", "/boot_time")
 
 PUBLISH_UPTIME_EVERY = CONFIG["timing"]["publish_uptime_every"]
 HISTORY_MAX_ENTRIES = max(1, int(CONFIG["timing"].get("history_max_entries", 100)))
@@ -121,6 +133,13 @@ def get_boot_time_epoch() -> float | None:
     return time.time() - uptime
 
 
+def get_boot_time_iso() -> str:
+    boot_epoch = get_boot_time_epoch()
+    if boot_epoch is None:
+        return ""
+    return datetime.fromtimestamp(boot_epoch).isoformat(timespec="seconds")
+
+
 def parse_timestamp(value: str) -> float | None:
     if not value:
         return None
@@ -175,6 +194,9 @@ def current_command_record() -> dict | None:
         "result": result,
         "message": message,
         "source": "Remote enhed",
+        "category": "power",
+        "event_type": "command_status",
+        "severity": "error" if result.lower() == "failure" else "info",
     }
 
 
@@ -240,6 +262,23 @@ def is_new_machine_boot(current_boot_id: str) -> bool:
     return last_updated_epoch < boot_time_epoch
 
 
+def append_boot_history(current_boot_id: str) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    append_history_record({
+        "timestamp": now,
+        "archived_at": now,
+        "command": "boot",
+        "result": "success",
+        "message": "Device started a new Linux boot session",
+        "source": "Remote enhed",
+        "category": "availability",
+        "event_type": "boot",
+        "severity": "info",
+        "boot_id": current_boot_id,
+        "boot_time": get_boot_time_iso(),
+    }, deduplicate=True)
+
+
 def initialize_boot_state() -> bool:
     current_boot_id = get_current_boot_id()
     new_boot = is_new_machine_boot(current_boot_id)
@@ -248,6 +287,7 @@ def initialize_boot_state() -> bool:
         archive_current_command_status()
         clear_current_command_status()
         write_action("idle")
+        append_boot_history(current_boot_id)
 
     if current_boot_id:
         write_text_file(BOOT_ID_FILE, current_boot_id)
@@ -280,6 +320,9 @@ def on_connect(*args):
     publish(TOPIC_POWER, "online", retain=True, qos=1)
     publish(TOPIC_ACTION, read_action(), retain=True, qos=1)
     publish(TOPIC_INFO_HOSTNAME, HOSTNAME, retain=True, qos=1)
+    publish(TOPIC_INFO_UPTIME, str(get_uptime_seconds()), retain=True, qos=0)
+    publish(TOPIC_BOOT_ID, get_current_boot_id(), retain=True, qos=1)
+    publish(TOPIC_BOOT_TIME, get_boot_time_iso(), retain=True, qos=1)
     publish_command_status()
     publish_history()
 

@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 CONTROL_DIR="${PROJECT_ROOT}/homelab-control"
 CONTROL_LIB="${CONTROL_DIR}/homelab_control_lib.sh"
 CONTROL_CONFIG="${CONTROL_DIR}/config.json"
