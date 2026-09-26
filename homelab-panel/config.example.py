@@ -21,7 +21,9 @@ MQTT_CONFIG = {
 # VALGFRI HOME ASSISTANT MQTT DISCOVERY
 # ============================================================
 # Når enabled=True opretter Homelab Panel automatisk MQTT Discovery entities
-# for hver REMOTE_DEVICES-enhed og for hver knap i mqtt_controls.buttons.
+# for hver REMOTE_DEVICES-enhed, alle mqtt_controls.buttons og LOCAL_SERVER.buttons.
+# WoL-knapper bruger samme label som websiden. Genstart panelet efter ændringer
+# i devices.py; Home Assistant-knapperne oprettes uden manuel YAML.
 # Ingen Home Assistant-konfiguration er nødvendig ud over en fungerende MQTT
 # integration der bruger samme broker.
 HOME_ASSISTANT_CONFIG = {
@@ -29,7 +31,12 @@ HOME_ASSISTANT_CONFIG = {
     "discovery_prefix": "homeassistant",
     "state_prefix": "homelab-panel/ha",
     "availability_topic": "homelab-panel/availability",
+    # Home Assistants birth-topic/payload. Panelet genudsender discovery ved online.
+    # Brug tom status_topic for at deaktivere denne genudsendelse.
+    "status_topic": "homeassistant/status",
+    "status_online_payload": "online",
     "qos": 1,
+    # Retain gælder discovery-konfiguration. HA-knapkommandoer er aldrig retained.
     "retain": True,
 }
 

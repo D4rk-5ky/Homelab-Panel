@@ -40,7 +40,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `mqtt_publish()` | Publishes a command with mosquitto_pub using configured credentials/QoS; preserves the existing external-client command path. |
 | `send_wol()` | Sends a Wake-on-LAN magic packet through wakeonlan; isolates the OS command from retry/orchestration logic. |
 | `run_local_script()` | Resolves a direct local action filename only inside `PROJECT_ROOT/scripts`, verifies it is executable, and runs it without `shell=True`; shared power helpers stay centralized and path traversal is rejected. |
-| `ping_host()` | Runs one bounded Linux ping; ping remains independent from MQTT. |
+| `execute_local_action()` | Looks up a local button ID in `LOCAL_SERVER.buttons`, reuses `run_local_script()`, and formats the result for both web and panel MQTT; clients cannot supply a script path. |
+| `ping_host()` | Runs one bounded ping with Linux seconds or macOS milliseconds for `-W`; ping remains independent from MQTT. |
 | `set_mqtt_state()` | Caches payload, receive time, retain and QoS metadata; supports status evaluation and diagnostics. |
 | `set_mqtt_connected()` | Tracks broker connectivity and connect/disconnect timestamps/reason; stale cached online data cannot count as current MQTT online. |
 | `get_mqtt_connected()` | Returns current broker connection state. |
@@ -74,7 +75,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `power_confirmation_worker()` | Confirms shutdown by ping+MQTT offline and reboot by offline-then-online; physical state decides completion. |
 | `execute_remote_action()` | Dispatches only configured WoL/cancel or dynamic device buttons, optionally with JSON job envelope; arbitrary commands remain rejected. |
 | `execute_and_record_remote_action()` | Creates panel job/history around dispatch and starts expected-state/power confirmation when relevant; web and panel-control MQTT share one path. |
-| `process_panel_control_message()` | Parses panel-control JSON device_id+command and routes it through the same allow-list dispatcher; retained messages are rejected before this function. |
+| `process_panel_control_message()` | Parses panel-control JSON. Remote commands require `device_id`; explicit `target=local` requires a configured local button ID and rejects any `device_id` field. Unknown/missing remote devices never fall back to the panel host. Retained messages are rejected by the receive callback before dispatch. |
 | `process_remote_jobs_message()` | Parses retained remote job snapshots, archives unseen lifecycle changes and merges matching job IDs; script exit results reach the dashboard without using panel-control. |
 | `handle_boot_id_message()` | Detects changed remote boot ID, clears provisional panel command state and records boot event; service restarts with same boot ID do not look like new boots. |
 | `format_duration()` | Formats seconds for uptime/transition display. |
@@ -82,15 +83,17 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `home_assistant_enabled()` | Returns the optional HA Discovery feature gate. |
 | `ha_state_topic()` | Builds the per-device retained HA state topic from config. |
 | `ha_device_block()` | Builds common Home Assistant device-registry metadata so all entities group under one device. |
-| `publish_home_assistant_discovery()` | Publishes discovery sensors/buttons for every device and every configured custom button; UI allow-list automatically becomes HA controls. |
+| `publish_home_assistant_button()` | Builds one MQTT button discovery document from a configured label, target payload and device; centralizes publication and explicitly disables retention of button commands while preserving configurable discovery retention. |
+| `publish_home_assistant_discovery()` | Publishes remote sensors, enabled Wake/cancel buttons, every remote MQTT button, and every local button. Existing remote IDs remain stable; local entities use the separate `homelab_local_panel` namespace and take their HA device name from `LOCAL_SERVER.name`, falling back to `LOCAL_SERVER.title` for older configs. The same configuration drives web and HA controls. |
+| `publish_home_assistant_snapshot()` | Republishes panel availability, discovery and available cached device states on broker connect or HA birth. Cached states avoid pinging inside the MQTT callback; the monitor supplies subsequent fresh state. |
 | `publish_home_assistant_state()` | Publishes combined status, ping, uptime, command/job and expected-state JSON for HA entities. |
 | `monitor_device_transition()` | Persists true combined-state transitions and previous-state duration, marking unexpected offline as errors. |
 | `status_monitor_loop()` | Periodically evaluates devices independent of page views, updates cache/history and HA state; ping works even when MQTT is absent. |
 | `start_status_monitor()` | Starts exactly one background monitor thread per process. |
 | `build_mqtt_diagnostics()` | Builds broker/subscription/topic metadata and per-device expected-topic table for the diagnostics page. |
-| `on_connect_compat()` | Marks broker connected, subscribes all configured/derived topics, publishes HA discovery/availability and records MQTT connect event. |
+| `on_connect_compat()` | Marks broker connected, subscribes configured/derived device/control topics plus the optional HA birth topic, publishes the HA snapshot and records the MQTT connection event. |
 | `on_disconnect_compat()` | Marks broker disconnected, stores reason and records MQTT disconnect events; cached online is no longer trusted. |
-| `on_message_compat()` | Caches message metadata, dispatches panel-control, job and boot handlers, and power transitions; central MQTT receive path. |
+| `on_message_compat()` | Caches message metadata, rejects retained panel-control messages for both local and remote targets, dispatches fresh commands on workers, republishes HA discovery on its configured online payload, and handles remote jobs/boot/power transitions. |
 | `build_mqtt_client()` | Creates Paho client with compatibility fallback, reconnect delay and optional HA LWT. |
 | `start_mqtt_listener()` | Starts background status monitor and asynchronous MQTT reconnect loop; web/ping stay usable if broker is down at startup. |
 | `login()` | GET/POST login route; creates session only after credential match. |
@@ -101,7 +104,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `wol_cancel()` | POST route cancelling an active WoL retry/confirmation workflow. |
 | `mqtt_diagnostics()` | Protected diagnostics route showing broker/subscription/expected-topic state. |
 | `mqtt_button()` | POST route dispatching any configured dynamic remote button through the shared action path. |
-| `local_button()` | POST route executing only configured LOCAL_SERVER scripts. |
+| `local_button()` | Protected POST route calling `execute_local_action()` and flashing its result; reuses the same local allow-list/runner as HA commands without changing session/token checks. |
 
 ## Flask routes
 
@@ -219,7 +222,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 ## Configuration files
 
 - `homelab-panel/config.example.py` — all panel/MQTT/auth/Home Assistant/monitor/history/job options. Active `config.py` is local-only and ignored.
-- `homelab-panel/devices.example.py` — device capabilities, WoL retry, status topics, expected-state defaults, confirmation and dynamic command buttons. Active `devices.py` is local-only and ignored.
+- `homelab-panel/devices.example.py` — device capabilities, WoL retry, status topics, expected-state defaults, confirmation, dynamic command buttons, and the separate local Home Assistant device `name`. Active `devices.py` is local-only and ignored.
 - `homelab-control/config.example.json` — remote broker/client/topics/timing and strict command-to-script allow-list. Active `config.json` is local-only and ignored.
 
 ## Repository hygiene / `.gitignore`
@@ -246,7 +249,78 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 
 - Web/session protection is global when enabled.
 - MQTT control executes only device/button IDs configured in `devices.py`.
-- Remote Homelab Control independently allow-lists command IDs in `config.json`; bundled power script names resolve from `PROJECT_ROOT/scripts`, while project-specific custom jobs are not moved by this release.
+- Remote Homelab Control independently allow-lists command IDs in `config.json`; bundled power scripts resolve from `PROJECT_ROOT/scripts`, while custom direct filenames resolve from `PROJECT_ROOT`.
 - Local panel power-script lookup rejects traversal/nested names, and the remote listener keeps strict direct-filename handling for its configured jobs.
-- Retained panel-control messages are never executed.
-- MQTT publish success means only “sent”; script success comes from remote job exit code, and power completion additionally uses ping/MQTT state confirmation.
+- Retained panel-control messages are never executed, including the explicit local target. HA button discovery sets command `retain=False`; remote forwarding still uses `MQTT_CONFIG["retain"]`, which must remain False.
+- Local HA commands reuse the webpage runner and its privilege/path checks; local buttons affect the panel host. Browser confirmation prompts do not transfer to HA.
+- The separate remote command listener does not reject retained commands; never publish retained messages to its command topic.
+- MQTT publish success means only “sent”. Agent script results and panel power-confirmation workers can both update the matching panel job; a script exit code by itself does not prove physical power completion.
+
+
+## Home Assistant discovery and commands
+
+- `HOME_ASSISTANT_CONFIG.enabled` keeps discovery optional, with default `False`.
+- `status_topic` defaults to `homeassistant/status`; an empty string disables the birth subscription. `status_online_payload` defaults to `online`. Older configs use these defaults without edits.
+- On broker connect or HA birth, `publish_home_assistant_snapshot()` offers discovery, online availability and cached sensor state. Subsequent monitor passes publish fresh state.
+- Remote discovery topics remain `<discovery_prefix>/button/homelab_panel_<device_id>/<button_id>/config`; Wake uses the existing `wake` ID. Local buttons use `<discovery_prefix>/button/homelab_local_panel/<button_id>/config` to avoid a remote device called `local` colliding with the host.
+- Remote `payload_press` is `{"device_id":"...","command":"..."}`. Local `payload_press` is `{"target":"local","command":"..."}`. Both go to the panel control topic and select configured IDs rather than executable text.
+- HA button labels come from the same `label` fields as web buttons. Local grouping uses `LOCAL_SERVER.name` as the Home Assistant device name; older configs without `name` fall back to `LOCAL_SERVER.title`. This keeps the webpage section heading separate from the HA device identity. Cancel-WoL stays registered in HA and refuses cancellation without an active job.
+- Navigation/history filters/login/logout do not represent device actions and have no HA button entities.
+- Discovery creates entities, not custom dashboard cards. Python configuration is loaded at startup; adding/editing buttons requires a panel restart. Removing a config entry prevents its execution but does not automatically delete a retained discovery document.
+
+## Browser functions and callbacks in `templates/index.html`
+
+| Function / callback | What / why |
+|---|---|
+| `fitFiveJobs()` | Measures the first five job cards and caps the list's height so older jobs remain reachable by scrolling. |
+| `.job-list` `forEach` callback | Initializes each device's list independently and restores its saved scroll offset after page refresh. |
+| `scroll` event callback | Saves that device list's scroll offset to session storage; errors are ignored when storage is unavailable. |
+| `ResizeObserver` callback | Recalculates the five-job height only when width changes, avoiding repeated work from height-only updates. The window resize listener supplies a fallback. |
+| Form `confirm(...)` handlers | Ask for the configured browser confirmation before a web action is submitted; they do not execute on HA MQTT presses. |
+
+## External commands and embedded Python
+
+| Command / block | What / why |
+|---|---|
+| `python3 app.py` | Starts Flask plus the panel MQTT/status background workers; there are no app CLI flags. |
+| `python3 homelab_control_command_listener.py` | Loads the agent allow-list and runs the MQTT command listener. |
+| `python3 homelab_control_status_indicator.py` | Starts Linux availability/boot/uptime/current-status publication. |
+| `mosquitto_pub -h -p -u -P -t -m -q` | Publishes to a broker with host/port/optional credentials/topic/message/QoS. `-r` is used for telemetry retention, not for control commands. |
+| `wakeonlan -i BROADCAST MAC` | Sends a magic packet to the configured broadcast destination. |
+| `ping -c 1 -W TIMEOUT HOST` | Gets one bounded reachability sample; timeout units follow the host OS. |
+| `shutdown -h +1`, `shutdown -r +1`, `shutdown -c` | Schedule shutdown, schedule reboot, or cancel a scheduled power operation. The shared helper uses `sudo` only for non-root execution. |
+| `json_get` / `json_get_optional` Python heredocs | Parse dotted JSON keys rather than evaluating shell text; the optional variant supplies missing-key defaults. |
+| `append_command_history` Python heredoc | Locks the shared event file, classifies the command, appends/caps history and replaces the file atomically. |
+| `history_payload` Python heredoc | Produces compact JSON for retained history publication, with malformed/missing-file fallback. |
+| `systemctl daemon-reload`, `enable --now`, `restart`, `status` | Reload unit definitions, enable/start services, reload app configuration, or inspect service state. |
+| `journalctl -u UNIT -f` | Restricts log output to one unit and follows new messages. |
+| `python3 -B -m unittest discover -s tests -v` | Runs the offline regression checks without writing bytecode; verbose discovery selects the included test directory. |
+
+## `tests/test_home_assistant.py`
+
+Tests use real Flask/Jinja with example configuration, temporary runtime files, captured publications and blocked subprocess/network startup. No live MQTT, WoL or power commands run.
+
+| Function / method | What / why |
+|---|---|
+| `load_panel()` | Imports the real app with example config modules while mocking MQTT-client construction and thread startup, keeping tests independent of active configs and networks. |
+| `setUp()` | Gives each test a fresh panel, temporary state directory, Flask client, publication capture and a subprocess blocker. |
+| `capture()` (nested) | Records MQTT publication arguments for assertions without contacting a broker. |
+| `button_configs()` | Extracts button discovery JSON from captured messages for entity/payload checks. |
+| `test_every_web_action_is_discovered_with_its_label()` | Verifies every example remote/WoL/local action, label, stable ID, topic, and non-retained command. |
+| `test_local_device_name_falls_back_to_title_for_old_configs()` | Removes the new local `name` setting and verifies older configs still publish the previous `title` as the HA device name. |
+| `test_custom_buttons_and_namespace_do_not_need_code_changes()` | Adds custom local/remote buttons via config and checks discovery plus actual shared dispatch; a remote device named local cannot collide with the panel host. |
+| `test_discovery_disabled_disconnected_or_missing_control_topic()` | Checks discovery opt-out, broker gating, and omission of buttons when no usable command topic exists. |
+| `test_web_and_mqtt_local_buttons_share_execution()` | Checks that web/MQTT choose the same configured script and reject unknown/ambiguous targets or path-like IDs. |
+| `test_web_auth_and_token_still_protect_local_route()` | Confirms that refactoring the local dispatcher preserves session/token access protection. |
+| `test_retained_control_is_rejected_for_both_targets()` | Verifies stale retained local and remote commands never start a worker. |
+| `test_live_control_dispatches_worker_and_legacy_remote_envelope()` | Verifies fresh messages use the worker dispatcher and existing remote JSON remains supported. |
+| `test_local_script_path_guards_are_preserved()` | Checks traversal, absolute paths, symlink escapes, missing files, and non-executable files without running a command. |
+| `test_home_assistant_birth_republishes_discovery_and_cached_state()` | Checks restart recovery with discovery retention disabled, retained availability/state, and no callback pings. |
+| `test_birth_defaults_customization_and_disabled_subscription()` | Verifies old-config defaults, custom HA topic/payload, empty-topic opt-out and globally disabled discovery. |
+| `test_webpages_still_render()` | Exercises the real Flask/Jinja dashboard, history, diagnostics and login pages after the integration change. |
+
+## Release support files
+
+- `VERSION` contains the current three-part version.
+- `VERSIONING.md` records the version policy and each release's actual changes.
+- `VALIDATION.md` records checks, environment limits, and the original/final file comparison for this package.
