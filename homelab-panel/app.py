@@ -30,8 +30,17 @@ except ImportError:
         "session_cookie_secure": False,
     }
 
+try:
+    from config import PANEL_HISTORY_MAX_ENTRIES
+except ImportError:
+    PANEL_HISTORY_MAX_ENTRIES = 100
+
+PANEL_HISTORY_MAX_ENTRIES = max(1, int(PANEL_HISTORY_MAX_ENTRIES))
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(APP_DIR)
+PANEL_STATE_DIR = os.path.join(APP_DIR, "state")
+PANEL_HISTORY_FILE = os.path.join(PANEL_STATE_DIR, "panel_action_history.json")
 LEGACY_FALLBACK_SECRET_KEY = "SKIFT_DENNE_TIL_EN_LANG_TILFÆLDIG_HEMMELIG_NØGLE"
 
 app = Flask(__name__)
@@ -46,6 +55,7 @@ MQTT_STATE = {}
 MQTT_STATE_LOCK = threading.Lock()
 PANEL_ACTION_STATE = {}
 PANEL_ACTION_STATE_LOCK = threading.Lock()
+PANEL_HISTORY_LOCK = threading.Lock()
 MQTT_CLIENT = None
 MQTT_CONNECTED = False
 
@@ -176,12 +186,16 @@ def ping_host(ip: str) -> bool:
     return ok
 
 
-def set_mqtt_state(topic: str, payload: str) -> None:
+def set_mqtt_state(topic: str, payload: str) -> str | None:
     with MQTT_STATE_LOCK:
+        previous = MQTT_STATE.get(topic)
         MQTT_STATE[topic] = {
             "payload": payload,
             "timestamp": time.time(),
         }
+    if not previous:
+        return None
+    return str(previous.get("payload", ""))
 
 
 def set_mqtt_connected(value: bool) -> None:
@@ -252,6 +266,87 @@ def command_to_danish(payload: str | None) -> str:
     return mapping.get(payload, payload)
 
 
+def get_history_topic_for_status_cfg(status_cfg: dict) -> str:
+    explicit = str(status_cfg.get("history_topic", "")).strip()
+    if explicit:
+        return explicit
+
+    last_message_topic = str(status_cfg.get("last_message_topic", "")).strip()
+    suffix = "/last_message"
+    if last_message_topic.endswith(suffix):
+        return last_message_topic[:-len(suffix)] + "/history"
+
+    return ""
+
+
+def load_panel_history_unlocked() -> dict:
+    try:
+        with open(PANEL_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    result = {}
+    for device_id, entries in data.items():
+        if isinstance(entries, list):
+            result[str(device_id)] = [entry for entry in entries if isinstance(entry, dict)]
+    return result
+
+
+def save_panel_history_unlocked(history: dict) -> None:
+    os.makedirs(PANEL_STATE_DIR, exist_ok=True)
+    tmp = PANEL_HISTORY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, PANEL_HISTORY_FILE)
+
+
+def append_panel_history_event(device_id: str, record: dict) -> None:
+    if device_id not in REMOTE_DEVICES:
+        return
+
+    with PANEL_HISTORY_LOCK:
+        history = load_panel_history_unlocked()
+        entries = history.setdefault(device_id, [])
+        entries.append(record)
+        history[device_id] = entries[-PANEL_HISTORY_MAX_ENTRIES:]
+        save_panel_history_unlocked(history)
+
+
+def get_panel_history(device_id: str) -> list[dict]:
+    with PANEL_HISTORY_LOCK:
+        history = load_panel_history_unlocked()
+        return [dict(entry) for entry in history.get(device_id, [])]
+
+
+def clear_panel_action_state(device_id: str) -> None:
+    with PANEL_ACTION_STATE_LOCK:
+        PANEL_ACTION_STATE.pop(device_id, None)
+
+
+def handle_device_power_transition(topic: str, previous_payload: str | None, payload: str) -> None:
+    if payload.strip().lower() != "online":
+        return
+    if previous_payload is not None and previous_payload.strip().lower() == "online":
+        return
+
+    for device_id, device in REMOTE_DEVICES.items():
+        power_topic = str(device.get("status", {}).get("power_topic", "")).strip()
+        if power_topic and power_topic == topic:
+            # Panel-originated state is already persisted in panel history when it
+            # is created. Once the device announces a new online transition, it
+            # must no longer remain as the current status card value.
+            clear_panel_action_state(device_id)
+
+
+def history_timestamp_sort_key(entry: dict) -> str:
+    return str(entry.get("timestamp") or entry.get("archived_at") or "")
+
+
 def record_panel_action(
     device_id: str,
     command: str,
@@ -264,14 +359,22 @@ def record_panel_action(
     if device_id not in REMOTE_DEVICES:
         return
 
+    record = {
+        "timestamp": event_timestamp,
+        "archived_at": event_timestamp,
+        "command": command,
+        "result": "sent" if ok else "failure",
+        "message": f"{source}: {message}",
+        "source": "Homelab Panel",
+    }
+
     with PANEL_ACTION_STATE_LOCK:
         PANEL_ACTION_STATE[device_id] = {
-            "command": command,
-            "result": "sent" if ok else "failure",
-            "message": f"{source}: {message}",
-            "timestamp": event_timestamp,
+            **record,
             "recorded_at": event_epoch,
         }
+
+    append_panel_history_event(device_id, record)
 
 
 def get_panel_action_state(device_id: str) -> dict | None:
@@ -295,36 +398,43 @@ def get_remote_command_state_received_at(status_cfg: dict) -> float:
     return received_at
 
 
-def get_device_history(device: dict) -> list[dict]:
-    history_topic = device.get("status", {}).get("history_topic", "").strip()
-    if not history_topic:
-        return []
-
-    payload, _ = get_mqtt_payload_and_age(history_topic)
-    if not payload:
-        return []
-
-    try:
-        raw_entries = json.loads(payload)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-
-    if not isinstance(raw_entries, list):
-        return []
-
+def get_device_history(device_id: str, device: dict) -> list[dict]:
     entries = []
-    for item in raw_entries:
-        if not isinstance(item, dict):
-            continue
+    history_topic = get_history_topic_for_status_cfg(device.get("status", {}))
+
+    if history_topic:
+        payload, _ = get_mqtt_payload_and_age(history_topic)
+        if payload:
+            try:
+                raw_entries = json.loads(payload)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw_entries = []
+
+            if isinstance(raw_entries, list):
+                for item in raw_entries:
+                    if not isinstance(item, dict):
+                        continue
+                    entries.append({
+                        "timestamp": str(item.get("timestamp") or item.get("archived_at") or "Ukendt"),
+                        "archived_at": str(item.get("archived_at") or "Ukendt"),
+                        "command": command_to_danish(str(item.get("command") or "")),
+                        "result": result_to_danish(str(item.get("result") or "").lower() or None),
+                        "message": str(item.get("message") or "Ingen"),
+                        "source": str(item.get("source") or "Remote enhed"),
+                    })
+
+    for item in get_panel_history(device_id):
         entries.append({
             "timestamp": str(item.get("timestamp") or item.get("archived_at") or "Ukendt"),
             "archived_at": str(item.get("archived_at") or "Ukendt"),
             "command": command_to_danish(str(item.get("command") or "")),
             "result": result_to_danish(str(item.get("result") or "").lower() or None),
             "message": str(item.get("message") or "Ingen"),
+            "source": str(item.get("source") or "Homelab Panel"),
         })
 
-    return list(reversed(entries))
+    entries.sort(key=history_timestamp_sort_key, reverse=True)
+    return entries
 
 
 def evaluate_remote_device_status(device_id: str, device: dict) -> dict:
@@ -341,21 +451,51 @@ def evaluate_remote_device_status(device_id: str, device: dict) -> dict:
     last_message_payload, _ = get_mqtt_payload_and_age(status_cfg.get("last_message_topic", ""))
     last_updated_payload, _ = get_mqtt_payload_and_age(status_cfg.get("last_updated_topic", ""))
 
+    power_topic = str(status_cfg.get("power_topic", "")).strip()
+    mqtt_configured = bool(power_topic)
+    mqtt_connected = get_mqtt_connected()
     mqtt_power_payload = power_payload.lower() if power_payload else None
     mqtt_power_fresh = power_age is not None and power_age <= MQTT_ONLINE_TTL_SECONDS
-    mqtt_online_ok = mqtt_power_payload == "online" and mqtt_power_fresh
 
+    # MQTT counts as online only while the panel is currently connected to the
+    # broker and has a fresh device power=online message. A cached retained/state
+    # value alone must never make the device appear online after broker loss.
+    mqtt_online_ok = bool(
+        mqtt_configured
+        and mqtt_connected
+        and mqtt_power_payload == "online"
+        and mqtt_power_fresh
+    )
+
+    # Ping and MQTT are intentionally evaluated independently. This lets the UI
+    # show that ICMP works before MQTT is configured/connected, while the strict
+    # combined Online state still requires both signals at the same time.
     if ping_ok and mqtt_online_ok:
         overall = "online"
         overall_text = "Online"
         status_class = "status-online"
+    elif ping_ok or mqtt_online_ok:
+        overall = "partial"
+        overall_text = "Ikke fuldt online"
+        status_class = "status-partial"
     else:
         overall = "offline"
         overall_text = "Offline"
         status_class = "status-offline"
 
-    if mqtt_power_payload is None:
-        mqtt_info = "Ingen MQTT-status"
+    if not mqtt_configured:
+        mqtt_info = "Ikke konfigureret"
+    elif not mqtt_connected:
+        if mqtt_power_payload is None:
+            mqtt_info = "Ikke tilsluttet MQTT-broker"
+        elif power_age is not None:
+            mqtt_info = f"Ikke tilsluttet broker · sidst: {mqtt_power_payload} ({power_age}s siden)"
+        else:
+            mqtt_info = f"Ikke tilsluttet broker · sidst: {mqtt_power_payload}"
+    elif mqtt_power_payload is None:
+        mqtt_info = "Broker tilsluttet · ingen enhedsstatus"
+    elif not mqtt_power_fresh:
+        mqtt_info = f"{mqtt_power_payload} · for gammel ({power_age}s siden)"
     elif power_age is not None:
         mqtt_info = f"{mqtt_power_payload} ({power_age}s siden)"
     else:
@@ -386,6 +526,8 @@ def evaluate_remote_device_status(device_id: str, device: dict) -> dict:
         "ping_ok": ping_ok,
         "ping_text": "Svarer" if ping_ok else "Svarer ikke",
         "mqtt_info": mqtt_info,
+        "mqtt_configured": mqtt_configured,
+        "mqtt_connected": mqtt_connected,
         "mqtt_online_ok": mqtt_online_ok,
         "action_text": action_to_danish(action_payload.lower() if action_payload else None),
         "last_command": display_last_command,
@@ -512,11 +654,14 @@ def on_connect_compat(*args):
             "last_result_topic",
             "last_message_topic",
             "last_updated_topic",
-            "history_topic",
         ):
-            topic = status_cfg.get(key, "").strip()
+            topic = str(status_cfg.get(key, "")).strip()
             if topic:
                 topics.add(topic)
+
+        history_topic = get_history_topic_for_status_cfg(status_cfg)
+        if history_topic:
+            topics.add(history_topic)
 
     panel_control_topic = MQTT_CONFIG.get("panel_control_topic", "").strip()
     if panel_control_topic:
@@ -547,7 +692,8 @@ def on_message_compat(client, userdata, msg):
         ).start()
         return
 
-    set_mqtt_state(msg.topic, payload)
+    previous_payload = set_mqtt_state(msg.topic, payload)
+    handle_device_power_transition(msg.topic, previous_payload, payload)
     print(f"Homelab-panel MQTT message: {msg.topic} = {payload}", flush=True)
 
 
@@ -581,10 +727,13 @@ def start_mqtt_listener() -> None:
     client.on_message = on_message_compat
 
     try:
-        client.connect(MQTT_CONFIG["host"], MQTT_CONFIG["port"], keepalive=60)
+        # Start the network loop even when the broker is not reachable yet.
+        # connect_async() lets Paho retry in the background using the configured
+        # reconnect delay, while the web panel remains available for ping/status.
+        client.connect_async(MQTT_CONFIG["host"], MQTT_CONFIG["port"], keepalive=60)
         client.loop_start()
         MQTT_CLIENT = client
-        print("Homelab-panel MQTT listener started", flush=True)
+        print("Homelab-panel MQTT listener started; broker connection runs in background", flush=True)
     except Exception as exc:
         print(f"MQTT listener kunne ikke starte: {exc}", flush=True)
 
@@ -655,7 +804,7 @@ def device_history(device_id: str):
         "history.html",
         device_id=device_id,
         device=device,
-        history=get_device_history(device),
+        history=get_device_history(device_id, device),
         token=request.args.get("token", ""),
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         web_auth_enabled=web_auth_enabled(),

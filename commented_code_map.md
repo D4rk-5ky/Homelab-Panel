@@ -14,9 +14,9 @@ Current-use documentation only: installation, configuration, MQTT payloads, rout
 Defines version increment/rollover rules and records release changes.
 
 ### `.gitignore`
-Ignores the machine-specific active panel/control configuration files while explicitly preserving the three tracked `*.example.*` configuration files.
+Ignores the machine-specific active panel/control configuration files while explicitly preserving the three tracked `*.example.*` configuration files, and ignores runtime panel/control state/log directories.
 
-**Why:** prevents host-specific settings and credentials from being committed while keeping complete configuration templates under version control.
+**Why:** prevents host-specific settings, credentials, history state, and runtime logs from being committed while keeping complete configuration templates under version control.
 
 ---
 
@@ -51,10 +51,10 @@ Cancels a pending shutdown/reboot. When remote control status integration is act
 # `homelab-panel/`
 
 ## `homelab-panel/config.py`
-Local-only panel runtime settings: WoL broadcast address, MQTT broker credentials/settings, optional username/password web authentication, Flask session secret/cookie behavior, legacy token gate, MQTT freshness TTL, and page refresh interval. This file is created from `config.example.py` and is intentionally excluded from Git/release ZIPs.
+Local-only panel runtime settings: WoL broadcast address, MQTT broker credentials/settings, optional username/password web authentication, Flask session secret/cookie behavior, legacy token gate, MQTT freshness TTL, page refresh interval, and the per-device panel-history cap. This file is created from `config.example.py` and is intentionally excluded from Git/release ZIPs.
 
 ## `homelab-panel/config.example.py`
-Complete example copy of every panel configuration field, including the optional `WEB_AUTH_CONFIG` username/password/session settings.
+Complete example copy of every panel configuration field, including the optional `WEB_AUTH_CONFIG` username/password/session settings and `PANEL_HISTORY_MAX_ENTRIES`.
 
 ## `homelab-panel/devices.py`
 Local-only device configuration defining `REMOTE_DEVICES` and `LOCAL_SERVER`. Device records contain display data, WoL configuration, status/history topics, and allow-listed MQTT button definitions. This file is created from `devices.example.py` and is intentionally excluded from Git/release ZIPs.
@@ -116,14 +116,14 @@ Resolves the configured script filename in the common project root (the parent d
 **Why:** local web actions remain restricted to configured script filenames rather than arbitrary commands.
 
 ### `ping_host(ip) -> bool`
-Runs one short ping to the configured device IP.
+Runs one short ping to the configured device IP and returns that ICMP result without depending on MQTT state.
 
-**Why:** feeds the panel's strict online-status policy.
+**Why:** ping is an independent connectivity signal. The UI must still show a successful ping when MQTT is unavailable, while combined Online status is decided later by `evaluate_remote_device_status()`.
 
-### `set_mqtt_state(topic, payload) -> None`
-Stores the latest received status/history payload and local receipt time under a lock.
+### `set_mqtt_state(topic, payload) -> str | None`
+Stores the latest received status/history payload and local receipt time under a lock, then returns the previous payload when one existed.
 
-**Why:** MQTT callbacks run in a background thread while Flask reads state during requests.
+**Why:** MQTT callbacks run in a background thread while Flask reads state, and online-transition handling needs to know whether a power message actually changed from non-online to `online`.
 
 ### `set_mqtt_connected(value) -> None`
 Updates the module MQTT connection flag.
@@ -131,7 +131,7 @@ Updates the module MQTT connection flag.
 ### `get_mqtt_connected() -> bool`
 Returns the module MQTT connection flag.
 
-**Why:** keeps MQTT connection-state access encapsulated even though it is not currently rendered in the UI.
+**Why:** MQTT device status only counts as currently online while the panel itself is connected to the broker; this prevents a cached `online` payload from producing a false combined Online result after disconnect.
 
 ### `get_mqtt_state(topic) -> dict | None`
 Returns stored MQTT state for a non-empty topic under the state lock.
@@ -158,10 +158,40 @@ Displays missing/`none`/`unknown` current commands as `Ingen` and maps the panel
 
 **Why:** cleared sentinel values and machine-oriented panel command IDs should not leak directly into the UI.
 
-### `record_panel_action(device_id, command, ok, message, source, event_epoch, event_timestamp) -> None`
-Stores the most recent panel-originated action for a configured remote device in the thread-safe in-memory `PANEL_ACTION_STATE`. A successful dispatch is stored as protocol result `sent`; failures are stored as `failure`. The caller supplies the action-start epoch/time so a fast remote response that arrives while command dispatch is running can correctly supersede the provisional panel record.
+### `get_history_topic_for_status_cfg(status_cfg) -> str`
+Returns explicit `history_topic` when configured; otherwise derives a sibling `/history` topic from a standard `/last_message` topic.
 
-**Why:** incoming panel MQTT control previously existed only in stdout logs. This creates a safe UI-visible provisional state without overwriting the remote agent's retained MQTT status topics.
+**Why:** older local `devices.py` files can gain history without an immediate config migration while explicit topic configuration remains authoritative.
+
+### `load_panel_history_unlocked() -> dict`
+Loads/validates persistent panel-originated history from `homelab-panel/state/panel_action_history.json`.
+
+### `save_panel_history_unlocked(history) -> None`
+Atomically writes panel action history through a temporary file.
+
+**Why:** panel history should survive a panel restart without exposing a partially written JSON file.
+
+### `append_panel_history_event(device_id, record) -> None`
+Appends one panel-originated event for a configured remote device and trims that device to `PANEL_HISTORY_MAX_ENTRIES`.
+
+### `get_panel_history(device_id) -> list[dict]`
+Returns copies of the persisted panel events for one device under the history lock.
+
+### `clear_panel_action_state(device_id) -> None`
+Removes only the provisional in-memory current panel action for one device. It does not delete the persisted history event.
+
+### `handle_device_power_transition(topic, previous_payload, payload) -> None`
+Detects a configured device power topic changing from unknown/non-online to `online` and clears that device's provisional current panel action.
+
+**Why:** a newly online device must start with a clean current panel status while the prior WoL/control dispatch remains available in history. Repeated `online` heartbeats do not repeatedly clear state.
+
+### `history_timestamp_sort_key(entry) -> str`
+Provides the timestamp/archived-time key used to sort merged panel and remote history newest-first.
+
+### `record_panel_action(device_id, command, ok, message, source, event_epoch, event_timestamp) -> None`
+Stores the most recent panel-originated action in thread-safe provisional `PANEL_ACTION_STATE` and appends the same event to persistent per-device panel history. Successful dispatch is stored as protocol result `sent`; failures as `failure`.
+
+**Why:** the action is visible immediately in the status card, but it is also preserved after the device comes online or the panel process restarts.
 
 ### `get_panel_action_state(device_id) -> dict | None`
 Returns a copy of the current provisional panel-action record for one device under a lock.
@@ -173,15 +203,15 @@ Finds the newest local receipt timestamp among the configured remote `last_comma
 
 **Why:** lets the panel decide whether its own provisional action or the remote agent's command state is newer without comparing wall clocks from different machines.
 
-### `get_device_history(device) -> list[dict]`
-Reads the latest retained JSON payload from the device's `history_topic`, validates that it is a list of dictionaries, normalizes display values, and returns newest entries first.
+### `get_device_history(device_id, device) -> list[dict]`
+Loads the retained remote history from the explicit/derived history topic, validates/normalizes each event, merges it with persistent panel-originated history for the same device, and sorts the combined list newest-first.
 
-**Why:** history parsing/validation belongs in one place instead of the Jinja template.
+**Why:** one device history page must include both the panel dispatch message and every remote execution-status message instead of losing intermediate events.
 
 ### `evaluate_remote_device_status(device_id, device) -> dict`
-Pings a device, reads all configured MQTT status fields, applies the freshness TTL, and builds the display model for one status card. For command/result/message/time fields it compares the latest provisional panel action with the latest locally received remote command state: a newer panel action is shown immediately, but a later remote-agent update automatically takes over.
+Pings a device independently, reads all configured MQTT status fields, reads the panel's current MQTT-broker connection flag, applies the freshness TTL, and builds the display model for one status card. Ping and MQTT each get their own result. Combined status is green `Online` only when ping and a fresh MQTT `online` signal are simultaneously valid while the broker connection is active; one valid side becomes yellow `Ikke fuldt online`; neither becomes red `Offline`. For command/result/message/time fields it compares the latest provisional panel action with the latest locally received remote command state: a newer panel action is shown immediately, but a later remote-agent update automatically takes over.
 
-**Why:** consolidates the panel's strict online policy and gives MQTT/web initiated actions immediate visible feedback without pretending dispatch is confirmed remote execution.
+**Why:** preserves independent diagnostics (especially ping before MQTT is available), prevents stale/cached MQTT from causing a false Online state, and keeps the strict requirement that both health signals agree before the device is called Online.
 
 ### `build_remote_device_statuses() -> dict`
 Calls `evaluate_remote_device_status(device_id, device)` for every configured remote device.
@@ -224,9 +254,10 @@ Routes received MQTT messages:
 
 - if the message is on `panel_control_topic`, retained messages are rejected;
 - non-retained panel-control messages are processed on a daemon thread so WoL/MQTT subprocess execution does not block the Paho callback loop;
-- all other subscribed messages are stored as status/history state.
+- all other subscribed messages are stored as status/history state;
+- power-topic payload changes are passed to `handle_device_power_transition()` so a newly online device drops provisional current panel state without deleting history.
 
-**Why:** separates control traffic from status traffic and prevents dangerous retained command replay.
+**Why:** separates control traffic from status traffic, prevents dangerous retained command replay, and gives device-online transitions explicit current-state cleanup.
 
 ### `build_mqtt_client()`
 Creates a Paho MQTT v3.1.1 client with VERSION2 callback API when available and a legacy fallback, then sets reconnect backoff.
@@ -234,9 +265,10 @@ Creates a Paho MQTT v3.1.1 client with VERSION2 callback API when available and 
 **Why:** maintains compatibility across Paho versions.
 
 ### `start_mqtt_listener() -> None`
-Configures credentials/callbacks, connects to the broker, starts Paho's background loop, and keeps Flask running even when initial broker connection fails.
+Builds the MQTT client, applies optional broker credentials, installs compatibility callbacks, schedules an asynchronous broker connection with `connect_async()`, starts the network loop immediately, and stores the client globally. The reconnect delay configured in `build_mqtt_client()` allows the MQTT client to keep trying when the broker is unavailable at panel startup. Startup/setup failures are logged without crashing the Flask app.
 
-**Why:** panel availability should not depend entirely on broker startup order.
+**Why:** Flask and independent ping/status rendering must remain available before MQTT connects, while MQTT should be able to come online later without restarting Homelab Panel.
+
 
 ### `login()` — `GET/POST /login`
 Public login endpoint only when web authentication is enabled. GET renders the login form; POST validates credentials, clears any previous session, stores only authenticated state/username, and redirects to the dashboard. When login is disabled it redirects to `/`.
@@ -283,7 +315,8 @@ Validates web-auth/session configuration first, then starts the MQTT listener wh
 ## `homelab-panel/templates/index.html`
 Main dark dashboard template. It renders:
 
-- remote online/current status;
+- three-state combined remote status (Online / Ikke fuldt online / Offline);
+- independent ping and MQTT indicators so one working signal remains visible when the other is unavailable;
 - a History button in every remote status card;
 - Wake-on-LAN buttons;
 - configured remote MQTT buttons;
@@ -348,10 +381,15 @@ Applies credentials, attaches callbacks, connects, and enters `loop_forever()`.
 ---
 
 ## `homelab_control_status_indicator.py`
-Remote retained status/history publisher and boot-session history manager.
+Remote retained status/history publisher, event-history reader, and boot-transition state manager.
 
 ### `load_config() -> dict`
 Reads `config.json`.
+
+### `derive_history_topic() -> str`
+Returns configured `topics.status_history`, or derives `<prefix>/history` from `topics.status_last_message=<prefix>/last_message` when an older active config lacks the explicit history key.
+
+**Why:** keeps old local configs compatible while retaining explicit topic control in current examples.
 
 ### `ensure_dirs() -> None`
 Creates runtime `state/` and `logs/` directories.
@@ -399,8 +437,16 @@ Builds an archive record from current last-command/result/message/timestamp. Sen
 
 **Why:** boots with no meaningful previous command should not create useless history entries.
 
+### `history_record_signature(record) -> tuple[str, str, str, str]`
+Builds the timestamp/command/result/message identity used for boot-rollover deduplication.
+
+### `append_history_record(record, deduplicate=False) -> bool`
+Appends a history record through the existing capped save path, optionally refusing an identical already-stored event.
+
 ### `archive_current_command_status() -> bool`
-Appends the meaningful current command record to history and saves it.
+Archives a meaningful pre-boot current command only when an identical event is not already present.
+
+**Why:** event history is recorded immediately, so boot cleanup must preserve migration data without duplicating the final event.
 
 ### `clear_current_command_status() -> None`
 Clears current-boot command/result/message and updates `last_updated` to the clearing time.
@@ -413,7 +459,7 @@ Compares stored/current boot IDs. When no stored ID exists yet, it falls back to
 **Why:** avoids false history rollover on service restarts and handles upgrades from 0.0.1 safely.
 
 ### `initialize_boot_state() -> bool`
-Performs boot transition handling: archive old command state, clear current fields, reset action to `idle`, and save the current boot ID. Returns whether a new boot was detected.
+Performs boot transition handling: deduplicate/archive any old meaningful current command, clear current fields, reset action to `idle`, and save the current boot ID. Returns whether a real new boot was detected.
 
 ### `publish(topic, payload, retain=True, qos=1) -> None`
 Publishes through the active Paho client and ignores empty topic strings.
@@ -458,7 +504,12 @@ Nested signal handler created by `main()` that sets the shared stop event for SI
 Shared remote script helper.
 
 ### `json_get()`
-Reads a dotted path from `config.json` using Python JSON parsing.
+Reads a required dotted path from `config.json` using Python JSON parsing.
+
+### `json_get_optional()`
+Reads an optional dotted path and returns a caller-supplied default when it is absent.
+
+**Why:** history additions remain compatible with older active configs that do not yet contain `status_history` or `history_max_entries`.
 
 ### `ensure_dirs()`
 Creates state/log directories.
@@ -467,13 +518,26 @@ Creates state/log directories.
 Returns local ISO-like date/time.
 
 ### `mqtt_pub(topic, payload)`
-Publishes a retained QoS 1 status value using configured broker credentials.
+Publishes a retained QoS 1 status value using configured broker credentials; empty topics are safely ignored.
 
 ### `write_action(value)`
 Writes the local action file.
 
+### `append_command_history(command, result, message, timestamp)`
+Uses a small Python helper plus `fcntl.flock` to append one event to `state/history.json`, cap it to `history_max_entries`, and atomically replace the file.
+
+**Why:** every command-status transition must survive even if the next transition overwrites the current files almost immediately.
+
+### `history_payload()`
+Reads/validates history and prints compact JSON suitable for MQTT.
+
+### `publish_history()`
+Publishes the complete retained history on the explicit or automatically derived history topic.
+
 ### `write_command_status(command, result, message)`
-Writes current command/result/message/time, appends `logs/commands.log`, and publishes all four retained status topics.
+Writes current command/result/message/time, appends `logs/commands.log`, immediately appends the exact event to history, publishes the four current retained status fields, then republishes retained history.
+
+**Why:** the history page must contain all sent execution messages, not just whichever message happened to be current at the next reboot.
 
 ### `set_idle()`
 Writes/publishes `idle`.

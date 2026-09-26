@@ -64,6 +64,11 @@
       box-shadow: inset 0 0 0 1px rgba(16,185,129,0.15);
     }
 
+    .status-partial {
+      border-color: #f59e0b;
+      box-shadow: inset 0 0 0 1px rgba(245,158,11,0.15);
+    }
+
     .status-offline {
       border-color: #ef4444;
       box-shadow: inset 0 0 0 1px rgba(239,68,68,0.15);
@@ -205,13 +210,31 @@
             <div class="status-main">
               {% if st["overall"] == "online" %}
                 🟢 {{ st["overall_text"] }}
+              {% elif st["overall"] == "partial" %}
+                🟡 {{ st["overall_text"] }}
               {% else %}
                 🔴 {{ st["overall_text"] }}
               {% endif %}
             </div>
 
-            <div class="status-line">Ping: {{ st["ping_text"] }}</div>
-            <div class="status-line">MQTT: {{ st["mqtt_info"] }}</div>
+            <div class="status-line">
+              Ping:
+              {% if st["ping_ok"] %}🟢{% else %}🔴{% endif %}
+              {{ st["ping_text"] }}
+            </div>
+            <div class="status-line">
+              MQTT:
+              {% if st["mqtt_online_ok"] %}
+                🟢
+              {% elif not st["mqtt_configured"] %}
+                ⚪
+              {% elif st["mqtt_connected"] %}
+                🟡
+              {% else %}
+                🔴
+              {% endif %}
+              {{ st["mqtt_info"] }}
+            </div>
             <div class="status-line">Handling: {{ st["action_text"] }}</div>
             <div class="status-line">Sidste kommando: {{ st["last_command"] }}</div>
             <div class="status-line">Sidste resultat: {{ st["last_result"] }}</div>

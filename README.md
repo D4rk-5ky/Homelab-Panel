@@ -1,6 +1,6 @@
 # Homelab Panel
 
-**Current version: 0.0.6**
+**Current version: 0.0.8**
 
 Homelab Panel is a Flask-based homelab control panel plus an MQTT-driven remote control/status agent.
 
@@ -53,7 +53,8 @@ The panel:
 - immediately shows panel-originated web/MQTT actions in the existing `Sidste kommando`, `Sidste resultat`, `Sidste besked`, and `Sidst opdateret` status fields; successful dispatch is shown as `Afsendt` until a newer real remote-agent command status arrives;
 - rejects retained incoming panel-control messages so an old destructive command is not replayed after reconnect;
 - exposes a History button in every remote-device status card;
-- displays remote history in separate Command, Result, and Message categories with the original date/time;
+- stores panel-originated device actions in persistent per-device panel history and merges them with remote-agent history;
+- displays every stored command-status event in separate Command, Result, and Message categories with the original date/time and source;
 - runs configured local shutdown/reboot scripts from the common project root;
 - refreshes the main browser page automatically at the configured interval.
 
@@ -65,20 +66,22 @@ The remote agent consists of two Python services plus shared shell helpers:
 - `homelab_control_status_indicator.py` publishes retained power/action/hostname/uptime/current-command state plus retained command history.
 - `homelab_action_common.sh` is shared by all four root action scripts. When a script is executed as root and an active `homelab-control/config.json` exists, it reuses `homelab_control_lib.sh` so remote status/history behavior is preserved.
 
-On a real machine reboot, the status indicator:
+Every call to the remote helper's `write_command_status()` immediately appends a history event before the current status can be overwritten. A shutdown/reboot flow can therefore keep multiple messages, for example both `Attempting to schedule ...` and the later `... scheduled` result, instead of only preserving the final message.
+
+On a real machine reboot, before the status service announces the new boot as online, it:
 
 1. detects the changed Linux boot ID;
-2. archives the previous boot's last command/result/message if it contains meaningful command data;
-3. preserves the original `last_updated` time as the history event timestamp;
-4. stores the archive in `state/history.json`;
-5. limits history to `timing.history_max_entries`;
-6. clears current `last_command`, `last_result`, and `last_message`;
-7. resets `action` to `idle`;
-8. publishes the cleared current values and complete retained history over MQTT.
+2. checks the previous current command/result/message;
+3. adds that old current value to history only if an identical event is not already present;
+4. clears current `last_command`, `last_result`, and `last_message`;
+5. resets `action` to `idle`;
+6. publishes `online`, the cleared current values, and the retained event history over MQTT.
 
-Restarting only the status service during the same Linux boot does **not** create another history entry or clear the current status.
+Restarting only the status service during the same Linux boot does **not** clear the current status or create a duplicate boot-history event.
 
-For migration from a version that did not yet store `boot_id`, the agent compares `last_updated` with the current Linux boot time. It archives only when the existing status clearly predates the current boot.
+For migration from an older release that did not append every event, the boot rollover still archives a meaningful old current status when it is missing from history.
+
+Panel-originated WoL/MQTT dispatches are also written to `homelab-panel/state/panel_action_history.json`. The dispatch remains visible as provisional current status until the remote device transitions to MQTT `online` or publishes newer real command status. On an `online` transition, the provisional panel status is cleared from the device card while its already-saved history event remains available on the History page.
 
 ## 2. Project layout
 
@@ -200,6 +203,9 @@ Edit the newly created local files for your environment. Git ignores `homelab-pa
 `PAGE_REFRESH_SECONDS`
 : Browser auto-refresh interval for the main page.
 
+`PANEL_HISTORY_MAX_ENTRIES`
+: Maximum number of panel-originated history events retained per remote device in `homelab-panel/state/panel_action_history.json`. Older active configs that omit this option use 100.
+
 ### `homelab-panel/devices.py`
 
 `REMOTE_DEVICES` is keyed by a unique `device_id` such as `aoostar_wtr`.
@@ -227,9 +233,9 @@ Each device supports:
 - `last_result_topic`
 - `last_message_topic`
 - `last_updated_topic`
-- `history_topic` — retained JSON history published by the remote status agent.
+- `history_topic` — retained JSON event history published by the remote status agent. If omitted/empty and `last_message_topic` ends in `/last_message`, the panel automatically derives the sibling `/history` topic for backward compatibility.
 
-An empty topic disables reception of that field. History pages for devices without `history_topic` simply show that no history is available.
+An empty/non-derivable topic disables remote history reception. Panel-originated history can still be shown for that device.
 
 #### `mqtt_controls`
 
@@ -333,12 +339,12 @@ Use unique client IDs for simultaneously connected clients.
 - `status_last_result` — retained current-boot last result.
 - `status_last_message` — retained current-boot last message.
 - `status_last_updated` — retained current-boot timestamp.
-- `status_history` — retained JSON array containing archived previous-boot status entries.
+- `status_history` — retained JSON array containing command-status events. If omitted and `status_last_message` ends in `/last_message`, the remote agent automatically derives the sibling `/history` topic.
 
 #### `timing`
 
 - `publish_uptime_every` — seconds between power heartbeat/uptime publications.
-- `history_max_entries` — maximum archived boot-session entries retained in `state/history.json` and published on `status_history`. Minimum effective value is 1.
+- `history_max_entries` — maximum remote command-status events retained in `state/history.json` and published on `status_history`. Minimum effective value is 1.
 
 #### `commands`
 
@@ -442,7 +448,7 @@ When a valid panel-control message is accepted, Homelab Panel immediately record
 - `Sidste besked` includes the source (`MQTT <panel_control_topic>` or `Webpanel`) and a useful dispatch message.
 - `Sidst opdateret` is the time the panel action started.
 
-This panel-side status is provisional and held in panel memory. If the remote agent later publishes newer `last_command`, `last_result`, `last_message`, and `last_updated` state, that real remote status automatically replaces the provisional panel result. A Homelab Panel process restart also clears the provisional in-memory panel action. Retained remote-agent status/history remains unaffected.
+The current panel-side status is provisional and held in panel memory, but every panel-originated action is also persisted to `homelab-panel/state/panel_action_history.json`. If the remote agent later publishes newer `last_command`, `last_result`, `last_message`, and `last_updated` state, that real remote status automatically replaces the provisional panel result. When the device transitions to MQTT `online`, the provisional panel status is cleared from the status card; its history event is preserved. A Homelab Panel process restart clears only the provisional in-memory current state, not the persisted panel action history.
 
 ## 8. Direct remote-agent MQTT control
 
@@ -457,35 +463,46 @@ mosquitto_pub -h YOUR_BROKER -t 'aoostar/control/power' -m 'reboot_cancel'
 
 ## 9. Command history
 
-The remote agent stores history in:
+History is event-based. Each call to the remote helper's `write_command_status()` creates its own entry immediately, so intermediate messages are not lost when the current status files are overwritten. Panel-originated WoL/MQTT dispatches create separate panel-history events as well.
+
+Remote-agent history is stored in:
 
 ```text
 homelab-control/state/history.json
 ```
 
+Panel-originated action history is stored in:
+
+```text
+homelab-panel/state/panel_action_history.json
+```
+
 A history entry contains:
 
-- `timestamp` — when the archived command/result/message last changed;
-- `archived_at` — when a later machine boot moved it into history;
+- `timestamp` — when that exact status/message event happened;
+- `archived_at` — when the event was written/archived;
 - `command`;
 - `result`;
-- `message`.
+- `message`;
+- `source` — normally `Remote enhed` or `Homelab Panel`.
 
-The status agent publishes the complete capped list to `topics.status_history` as retained JSON.
+The remote helper publishes the complete capped remote history as retained JSON on `topics.status_history`. When `status_history` is missing, `/history` is automatically derived from `status_last_message` when possible. The panel performs the same derivation when a device lacks explicit `history_topic`.
 
-The panel reads the configured `history_topic` and the History button on each remote status card opens:
+The History button on each remote status card opens:
 
 ```text
 /history/<device_id>
 ```
 
-The history page displays three separate categories:
+The panel merges remote-agent history with its own panel-action history and sorts the combined events newest-first. The history page displays three separate categories:
 
 - Command history
 - Result history
 - Message history
 
-Every displayed value includes the original `timestamp`.
+Every displayed value includes its event timestamp and source.
+
+When a real remote machine boot is detected, any meaningful pre-existing current status is archived only if it is not already represented by an event, then the current command/result/message are cleared before the new online status is published. This prevents a previous boot's final status from remaining as the new boot's current status while avoiding duplicate history entries.
 
 ## 10. Commands and flags
 
@@ -550,14 +567,24 @@ When `WEB_AUTH_CONFIG["enabled"]` is `True`, all routes except `/login` (and Fla
 
 ## 12. Status logic
 
-A device is displayed as Online only when:
+Ping and MQTT are evaluated and displayed independently. A working ping is therefore visible even when MQTT is not configured, the broker is disconnected, or no MQTT device-status message has been received yet.
 
-1. its configured IP responds to ping;
-2. the panel has received its MQTT `power_topic`;
-3. the MQTT value is `online`;
-4. the message age is within `MQTT_ONLINE_TTL_SECONDS`.
+The status card uses three combined states:
 
-Otherwise the device is displayed Offline.
+- **Online** (green) only when the configured IP responds to ping **and** Homelab Panel is currently connected to the MQTT broker **and** the device's fresh `power_topic` value is `online`.
+- **Ikke fuldt online** (yellow) when exactly one side is currently online, for example ping works but MQTT is unavailable, or MQTT says online while ping does not answer.
+- **Offline** (red) when neither ping nor a valid current MQTT-online signal is available.
+
+For MQTT to count as online, all of these must be true at the same time:
+
+1. a non-empty `power_topic` is configured for the device;
+2. Homelab Panel's MQTT client is currently connected to the broker;
+3. the received power payload is `online`;
+4. the local receipt age is within `MQTT_ONLINE_TTL_SECONDS`.
+
+A previously received/cached `online` payload does not keep the device Online after the panel loses its broker connection. The MQTT line explicitly distinguishes not configured, broker disconnected, connected without device status, stale status, and fresh status.
+
+Homelab Panel starts the MQTT client asynchronously. If the broker is unavailable when the panel starts, the web interface and ping checks still work immediately while Paho keeps retrying the broker connection in the background. A panel restart is therefore not required merely because MQTT was unavailable at startup.
 
 The remote status service uses an MQTT last-will of `offline` and republishes `online` with its uptime heartbeat.
 
@@ -633,7 +660,7 @@ journalctl -u homelab-control-status-indicator.service
 1. Add the device to `REMOTE_DEVICES`.
 2. Configure Wake-on-LAN if needed.
 3. Configure status topics.
-4. Configure `history_topic` if the remote agent publishes history.
+4. Configure `history_topic` explicitly when desired; if omitted, the panel can derive `/history` from a standard `.../last_message` topic.
 5. Configure `mqtt_controls` if shutdown/reboot control is required.
 6. Install/configure the remote agent on that machine when status/control/history is needed.
 7. Keep local active configuration files updated on installed systems, and update the tracked example files whenever available configuration options change. Active `config.py`, `devices.py`, and `config.json` are intentionally ignored and excluded from release ZIPs.

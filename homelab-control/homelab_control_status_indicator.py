@@ -51,7 +51,20 @@ TOPIC_LAST_COMMAND = CONFIG["topics"]["status_last_command"]
 TOPIC_LAST_RESULT = CONFIG["topics"]["status_last_result"]
 TOPIC_LAST_MESSAGE = CONFIG["topics"]["status_last_message"]
 TOPIC_LAST_UPDATED = CONFIG["topics"]["status_last_updated"]
-TOPIC_HISTORY = CONFIG["topics"].get("status_history", "")
+
+def derive_history_topic() -> str:
+    explicit = str(CONFIG["topics"].get("status_history", "")).strip()
+    if explicit:
+        return explicit
+
+    last_message_topic = str(CONFIG["topics"].get("status_last_message", "")).strip()
+    suffix = "/last_message"
+    if last_message_topic.endswith(suffix):
+        return last_message_topic[:-len(suffix)] + "/history"
+    return ""
+
+
+TOPIC_HISTORY = derive_history_topic()
 
 PUBLISH_UPTIME_EVERY = CONFIG["timing"]["publish_uptime_every"]
 HISTORY_MAX_ENTRIES = max(1, int(CONFIG["timing"].get("history_max_entries", 100)))
@@ -161,7 +174,31 @@ def current_command_record() -> dict | None:
         "command": command,
         "result": result,
         "message": message,
+        "source": "Remote enhed",
     }
+
+
+def history_record_signature(record: dict) -> tuple[str, str, str, str]:
+    return (
+        str(record.get("timestamp", "")),
+        str(record.get("command", "")),
+        str(record.get("result", "")),
+        str(record.get("message", "")),
+    )
+
+
+def append_history_record(record: dict, deduplicate: bool = False) -> bool:
+    history = load_history()
+    signature = history_record_signature(record)
+
+    if deduplicate:
+        for existing in reversed(history):
+            if history_record_signature(existing) == signature:
+                return False
+
+    history.append(record)
+    save_history(history)
+    return True
 
 
 def archive_current_command_status() -> bool:
@@ -169,10 +206,10 @@ def archive_current_command_status() -> bool:
     if record is None:
         return False
 
-    history = load_history()
-    history.append(record)
-    save_history(history)
-    return True
+    # Newer releases append every command-status event immediately. The boot
+    # rollover therefore only adds the old current status when it is not
+    # already present (for example after upgrading from an older release).
+    return append_history_record(record, deduplicate=True)
 
 
 def clear_current_command_status() -> None:

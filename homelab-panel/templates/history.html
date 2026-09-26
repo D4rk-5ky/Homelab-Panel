@@ -113,7 +113,7 @@
         <div class="history-list">
           {% for entry in history %}
             <div class="history-item">
-              <div class="history-time">{{ entry.timestamp }}</div>
+              <div class="history-time">{{ entry.timestamp }} · {{ entry.source }}</div>
               <div class="history-value">{{ entry.command }}</div>
             </div>
           {% endfor %}
@@ -125,7 +125,7 @@
         <div class="history-list">
           {% for entry in history %}
             <div class="history-item">
-              <div class="history-time">{{ entry.timestamp }}</div>
+              <div class="history-time">{{ entry.timestamp }} · {{ entry.source }}</div>
               <div class="history-value">{{ entry.result }}</div>
             </div>
           {% endfor %}
@@ -137,7 +137,7 @@
         <div class="history-list">
           {% for entry in history %}
             <div class="history-item">
-              <div class="history-time">{{ entry.timestamp }}</div>
+              <div class="history-time">{{ entry.timestamp }} · {{ entry.source }}</div>
               <div class="history-value">{{ entry.message }}</div>
             </div>
           {% endfor %}

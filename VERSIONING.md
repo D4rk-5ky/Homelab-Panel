@@ -24,6 +24,73 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.8 — 2026-09-25
+
+### Independent ping and MQTT status
+
+- Kept ping evaluation independent from MQTT so a responding device is visibly shown as `Ping: Svarer` even when MQTT is not configured, not connected, or has not published status yet.
+- Added a three-state combined device presentation: green `Online`, yellow `Ikke fuldt online`, and red `Offline`.
+- The combined green `Online` state now requires ping and MQTT-online to be true at the same time.
+- MQTT-online now additionally requires Homelab Panel's MQTT client to be currently connected to the broker; a cached/fresh-looking previous `online` payload alone no longer counts after broker disconnect.
+- Added explicit MQTT display states for not configured, broker disconnected, broker connected without a device status, stale power status, and fresh power status.
+- Added separate ping/MQTT status indicators in the device card so partial connectivity is visible instead of being hidden behind a single red overall result.
+- Changed panel MQTT startup from blocking `connect()` to `connect_async()` plus the existing background loop/reconnect delay. The web panel and ping therefore keep working when the broker is unavailable at startup, and MQTT can connect later without restarting Homelab Panel.
+- No ping command semantics, MQTT topics, device control, command history, web authentication, shutdown/reboot safety, or config format were changed.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.7 project before modification.
+- Targeted status-model tests cover ping-only, MQTT-only, both online, neither online, broker-disconnected cached MQTT, unconfigured MQTT, and stale MQTT.
+- Targeted MQTT-startup test verifies `connect_async()` is scheduled and the network loop starts without waiting for a successful broker connection.
+- Python compile/syntax, shell syntax, JSON, Jinja, systemd, documentation/function-map, manifest, and release-artifact cleanliness checks were repeated for the final package.
+- A real ICMP ping could not be executed inside the release container because raw-socket permission is denied there; ping behavior was therefore verified through the panel's status logic with controlled ping results rather than by live ICMP from the container.
+
+## 0.0.7 — 2026-09-25
+
+### Event-based device history
+
+- Changed remote command history from one previous-boot snapshot to an event stream: every `write_command_status()` call now appends its own command/result/message/timestamp entry before the current status is overwritten.
+- Intermediate messages such as `running` followed by `success` are therefore both preserved instead of only the final message surviving until the next boot.
+- Added a `source` field to new history events (`Remote enhed` or `Homelab Panel`).
+- Kept `timing.history_max_entries` as the cap for remote history events.
+- Added file locking and atomic replacement when the shell helper appends remote history, reducing the risk of a partially written `history.json`.
+- The complete updated remote history is published retained after each command-status event.
+
+### Clean current status on a new online boot
+
+- Preserved Linux boot-ID detection so a service restart during the same boot does not incorrectly clear status.
+- On a real new boot, the previous current command/result/message is archived only when an identical event is not already present, then the current fields are cleared before the new online state is published.
+- This provides migration safety for older installations while preventing the final event from being duplicated in 0.0.7 history.
+
+### Panel-originated history and online transition
+
+- Panel-originated WoL and remote MQTT dispatches are now persisted per device in `homelab-panel/state/panel_action_history.json`, capped by new optional `PANEL_HISTORY_MAX_ENTRIES` (default 100).
+- A provisional panel action remains visible in the current status card while appropriate, but when that device transitions from non-online/unknown to MQTT `online`, the provisional current panel status is cleared.
+- The same panel action remains in history after the current card is cleared.
+- The per-device history page merges panel-originated and remote-agent events, sorts them newest-first, and shows the source alongside each timestamp.
+
+### Backward-compatible history topic discovery
+
+- `homelab-control` now derives `<prefix>/history` from `status_last_message=<prefix>/last_message` when an older active `config.json` has no `status_history`.
+- Homelab Panel performs the same derivation when an older active `devices.py` has no `history_topic`.
+- Explicit `status_history` / `history_topic` remains supported and is still shown in the example configs.
+- This allows the user's existing `aoostar/status/...` configuration to begin carrying history without requiring an immediate local config edit.
+
+### Configuration and repository hygiene
+
+- Added `PANEL_HISTORY_MAX_ENTRIES = 100` to `homelab-panel/config.example.py`.
+- Added runtime state/log directories to `.gitignore`; active config ignore behavior and all example configs remain unchanged.
+- Updated `README.md`, `commented_code_map.md`, and `VERSION` for current 0.0.7 behavior.
+
+### Validation performed for this release
+
+- Re-reviewed the full 0.0.6 project before modification.
+- Python compile/syntax checks and shell `bash -n` checks.
+- Targeted remote-helper test verified two consecutive status messages create two distinct history events and that an omitted `status_history` derives `aoostar/status/history`.
+- Targeted boot rollover test verified an event already in history is not duplicated, current fields are cleared on a real new boot, and a legacy current status missing from history is archived once.
+- Targeted panel test verified a panel WoL action is persisted, an MQTT offline→online transition clears only its provisional current state, and panel plus remote history events merge without losing messages.
+- Final JSON/Jinja/systemd/manifest/forbidden-artifact checks are recorded with the release package.
+
 ## 0.0.6 — 2026-09-25
 
 ### Panel-control actions now appear in Remote enhedsstatus
