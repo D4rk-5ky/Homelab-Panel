@@ -11,7 +11,9 @@ MQTT_CONFIG = {
     "port": 1883,
     "user": "",
     "pass": "",
+    # Paho-publisherens QoS for remote kommandoer: 0, 1 eller 2.
     "qos": 0,
+    # Kun kommandoer: behold False, så gamle power-kommandoer ikke genafspilles.
     "retain": False,
     "client_id_panel_status": "homelab-panel-status",
     "panel_control_topic": "homelab-panel/control",
@@ -63,7 +65,8 @@ PANEL_TOKEN = ""
 MQTT_ONLINE_TTL_SECONDS = 90
 
 # Hvor ofte baggrundsmonitoren pinger enheder, registrerer state transitions,
-# opdaterer job/WoL confirmation og publicerer Home Assistant state.
+# opdaterer status-cache og publicerer Home Assistant state.
+# WoL/power-confirmation kører i deres egne baggrundstråde.
 STATUS_MONITOR_INTERVAL_SECONDS = 10
 
 # Auto refresh i browseren.

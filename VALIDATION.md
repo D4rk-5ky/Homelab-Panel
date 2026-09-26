@@ -1,66 +1,79 @@
-# Homelab Panel 0.0.12 — validation
+# Homelab Panel 0.0.14 — validation
 
-## Result
+## Result and scope
 
-Version 0.0.12 was created from the user-provided **0.0.11** baseline. The release keeps the same **26 project paths**: no original path was removed or renamed and no new runtime/source path was added. Eight baseline files are updated for the feature, release metadata, documentation, tests, and validation; all other files remain byte-for-byte unchanged.
+Created **0.0.14** from the preceding **0.0.13** release. All **26 baseline project paths** remain; **2 files added**, **9 updated**, and **17 unchanged**. The same 26 paths from the original uploaded **0.0.12** archive are also preserved. The final ZIP contains **28 files** under `Homelab-Panel-0.0.14/`.
 
-Original 0.0.11 archive SHA-256: `e3e68ccd77207c82eb76b66d2656f44366c4878f08dd7ebb074e69af864b6e08`.
+Baseline 0.0.13 ZIP SHA-256: `c196c972a8d7e47b0206ccd152211f36257fd1f7fb6499022b92ea32f0a0a637`.
+
+Original uploaded 0.0.12 ZIP SHA-256: `a47f923f10850a02b09a5b01e3ee451d44f3a14a8357e02cf65fff26525e426f`.
 
 ## What changed
 
-- Added optional `LOCAL_SERVER["name"]` as the local **Home Assistant device name**.
-- Kept `LOCAL_SERVER["title"]` as the Homelab Panel webpage section title.
-- Local HA MQTT discovery now prefers `LOCAL_SERVER.name`; older active `devices.py` files without the new key fall back to `LOCAL_SERVER.title`, then `"Homelab Panel"`.
-- Local button labels still come from each existing button `label`. Home Assistant therefore has a real device name to combine with the button name, matching the naming pattern used by remote devices.
-- Discovery topic `homelab_local_panel`, identifiers, unique IDs, command payloads, scripts, allow-listing, auth/token checks, retained-command rejection, shutdown/reboot delays, and all remote-device behavior are unchanged.
+- The panel and Bash agent status library now share `homelab_mqtt.py` for Paho publishing. No runtime source invokes `mosquitto_pub` or `mosquitto_sub`; all subscriptions already used Paho.
+- Panel publications keep configured host/port/authentication, topic/payload, QoS/retention, `(ok, message)` results, and the 20-second process timeout.
+- Shell telemetry keeps QoS 1, retained messages, exact stdin payloads, empty-topic no-op, quiet success, and failure propagation. Its MQTT credentials are read by Python directly from the existing config. Telemetry now also has a 20-second timeout.
+- Each publication uses a disposable Python process and Paho client. Credentials are sent on stdin rather than argv. The parent kills and waits for a timed-out child, including during DNS/connect stalls. Clients never reconnect, and failure after sending reports that delivery may be unknown.
+- Persistent status/subscription clients remain unchanged. One-shot publication uses MQTT 3.1.1 and a fixed 60-second keepalive. No new configuration fields are required.
+- README documents installation without Mosquitto client tools, the publishing CLI and every flag, exit codes, timeout/completion semantics, and remaining broker requirements. Updated code map, configuration comments, version history, tests, and this report; retained the supplied disclaimer.
 
-## Checks completed
+## Verification
 
-Environment: Linux 6.18.44 x86_64, Python 3.13.5.
+Environment: Darwin 24.6.0, Python 3.13.15, Flask 3.1.3, Paho MQTT 2.1.0, Jinja 3.1.6.
 
-- Compiled all **6 Python source/test files** in memory with Python `compile()` successfully.
-- Passed `bash -n` for all **6 shell files**.
-- Parsed `homelab-control/config.example.json` successfully.
-- Parsed all **4 Jinja templates** successfully.
-- `systemd-analyze verify` passed for all **3 supplied service files**.
-- Compared top-level function ASTs in `homelab-panel/app.py` against 0.0.11: **only `publish_home_assistant_discovery()` changed**. Existing execution, authentication, WoL, power-confirmation, MQTT dispatch, and script-safety functions are unchanged.
-- Ran a targeted import/execution check of the real `app.py` discovery path with temporary dependency stubs and all external thread/network work blocked. It verified all four local buttons publish `device.name = LOCAL_SERVER["name"]`, and verified the old-config fallback to `LOCAL_SERVER["title"]`.
-- Added project regression assertions for explicit local HA device naming and a dedicated fallback test for old configs.
-- Confirmed the README disclaimer/liability and AI-assisted disclaimer text remains unchanged from 0.0.11.
-- Verified the final project tree contains no `__pycache__`, `.pyc`, `.pyo`, build-cache, dependency-environment, active-config, runtime-state, log, or temporary files.
+### Regression and protocol checks
 
-## Full regression-suite limitation
+**27 tests passed** with no skipped tests:
 
-`python3 -B -m unittest discover -s tests -v` could not run in this execution environment because `paho-mqtt` and Flask are not installed. The suite stops during import at `ModuleNotFoundError: No module named 'paho'`. A temporary `pip --target` installation of Flask and Paho was attempted outside the project, but the environment has no working package-index/DNS access, so no dependencies could be downloaded.
+- The 12 existing panel/HA tests still pass, covering discovery, local naming, shared routing, access gates, retained panel-command rejection, path containment, and rendering all four pages.
+- Publisher unit tests cover exact config/payload/QoS/retention forwarding, unauthenticated defaults, rejected connections, socket/Paho errors, invalid inputs, timeout cleanup, callback API compatibility, and private stdin requests with bounded subprocesses.
+- Panel delegation and helper CLI tests cover return values, JSON config, verbatim stdin, flags, safe help, and nonzero failures.
+- The real Bash library runs against a transport shim to verify its Python command arguments, payload bytes, empty-topic behavior, suppressed success output, preserved error output, and propagated exit status. This never invokes a power script.
+- Actual Paho network code and the production child-process path are exercised against a minimal MQTT peer bound only to `127.0.0.1` on an ephemeral port. Tests check authentication and clean-session flags, topic/UTF-8 payload bytes, retained flags, QoS 0 send, QoS 1 PUBACK, and QoS 2 PUBREC/PUBREL/PUBCOMP. Refused CONNACK sends no command; withheld PUBACK causes failure and transport closure without retry.
+- Localhost socket tests required execution outside the default sandbox because it blocks listener sockets. They then passed; no external broker or homelab host was contacted.
 
-This is an environment limitation rather than a failing project assertion. The new discovery behavior was still exercised through the targeted dependency-stub check described above.
+### Static and CLI checks
 
-## Not fully tested
+- All **8 Python source/config/test files** compile in memory.
+- All **6 shell files** pass `bash -n`; all **4 embedded Python heredocs** compile.
+- The remote JSON example and all **4 Jinja templates** parse.
+- All **3 systemd examples** pass structural section/directive checks; full systemd validation is unavailable on this macOS host.
+- All **209 Python/shell function definitions** have code-map entries, including nested/test helpers; existing browser callbacks remain documented.
+- Configuration examples cover existing options; README covers all example option names and every new publisher flag. Panel config imports match the example. Config values/parsed code are unchanged; edits to the panel config example are comments only.
+- Actual `homelab_mqtt.py --help` succeeds without network activity. Invalid QoS exits with argument-error status 2.
+- AST comparison shows `mqtt_publish()` is the only changed existing panel function. The app also imports the shared module from the project root. Remote listener/status Python files, service files, templates, device configuration, and all power action scripts are byte-identical to 0.0.13.
+- Existing version history and both disclaimer sections are preserved.
 
-- No live Home Assistant instance or MQTT broker was connected, so final device/entity presentation in a live HA registry still requires deployment verification.
-- No real Wake-on-LAN, shutdown, reboot, sudo/root action, or remote custom job was executed.
-- The full Flask/Paho regression suite could not execute because those dependencies are unavailable in this environment.
-- No interactive browser layout test was run; templates themselves are unchanged and parse successfully.
+### ZIP checks
 
-## Upgrade note
+- Compared final relative paths against both the original uploaded archive and 0.0.13: no original files removed or renamed; both new source/test files included.
+- Verified ZIP integrity, unique names, per-file content hashes, and permissions against the final tree; original executable flags are preserved.
+- Excluded Python caches/bytecode, build caches, temporary files, runtime data/logs, active configs, and dependency environments. No forbidden files are present.
+- The accompanying manifest includes original-upload, baseline, and release SHA-256 values per file; the checksum file identifies the ZIP.
 
-Existing active `homelab-panel/devices.py` files continue to work without modification. To give the local Home Assistant device a distinct host name, add `name` next to `title`, for example:
+## Reproduce
 
-```python
-LOCAL_SERVER = {
-    "title": "Lokal enhedskontrol",
-    "name": "Mac Mini",
-    "buttons": [
-        # existing buttons unchanged
-    ],
-}
+From the extracted project root, using Python 3.10+ with Flask and Paho installed:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+python3 homelab_mqtt.py --help
 ```
 
-After changing `devices.py`, restart Homelab Panel so MQTT discovery is republished. Existing retained Home Assistant discovery uses the same local identifier and entity unique IDs, so this changes the device name rather than intentionally creating a second local device.
+The full test suite requires permission to bind temporary localhost sockets. It does not use the configured production broker. `-B` disables import-time bytecode, `-m unittest` runs the test runner, `discover` locates tests, `-s tests` selects their directory, and `-v` prints individual results.
 
-## File comparison against 0.0.11
+## Limits
 
-| Project-relative file | Status |
+- No production MQTT broker, ACL policy, Home Assistant registry, or real device integration was exercised. The localhost peer covers specific MQTT exchanges rather than a complete broker implementation.
+- No real Wake-on-LAN, shutdown/reboot/cancellation, privileged sudo/root operation, or user-provided job was executed.
+- Linux `/proc` boot/uptime behavior and service startup/restart remain untested; `systemd-analyze` is unavailable.
+- Browser layout/keyboard scrolling was not tested interactively; templates render in the existing Flask tests and their source is unchanged.
+- The older Paho constructor/callback path is checked with a test double; real wire tests used the installed Paho 2.1.0.
+- Existing remote-agent retained-command behavior and power-confirmation semantics are unchanged. Transport completion still does not prove that a remote action ran; a missing acknowledgement can leave delivery uncertain.
+
+## Changes against 0.0.13
+
+| Project-relative path | Content status |
 |---|---|
 | `.gitignore` | Unchanged |
 | `README.md` | Updated |
@@ -72,19 +85,21 @@ After changing `devices.py`, restart Homelab Panel so MQTT discovery is republis
 | `homelab-control/homelab-control-command-listener.service` | Unchanged |
 | `homelab-control/homelab-control-status-indicator.service` | Unchanged |
 | `homelab-control/homelab_control_command_listener.py` | Unchanged |
-| `homelab-control/homelab_control_lib.sh` | Unchanged |
+| `homelab-control/homelab_control_lib.sh` | Updated |
 | `homelab-control/homelab_control_status_indicator.py` | Unchanged |
 | `homelab-panel/app.py` | Updated |
-| `homelab-panel/config.example.py` | Unchanged |
-| `homelab-panel/devices.example.py` | Updated |
+| `homelab-panel/config.example.py` | Updated |
+| `homelab-panel/devices.example.py` | Unchanged |
 | `homelab-panel/homelab-controll.service` | Unchanged |
 | `homelab-panel/templates/history.html` | Unchanged |
 | `homelab-panel/templates/index.html` | Unchanged |
 | `homelab-panel/templates/login.html` | Unchanged |
 | `homelab-panel/templates/mqtt_diagnostics.html` | Unchanged |
+| `homelab_mqtt.py` | Added |
 | `scripts/homelab_action_common.sh` | Unchanged |
 | `scripts/reboot_cancel.sh` | Unchanged |
 | `scripts/reboot_delay.sh` | Unchanged |
 | `scripts/shutdown_cancel.sh` | Unchanged |
 | `scripts/shutdown_delay.sh` | Unchanged |
 | `tests/test_home_assistant.py` | Updated |
+| `tests/test_mqtt_publish.py` | Added |

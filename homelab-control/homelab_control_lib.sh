@@ -49,11 +49,6 @@ else:
 PY
 }
 
-MQTT_HOST="$(json_get mqtt.host)"
-MQTT_PORT="$(json_get mqtt.port)"
-MQTT_USER="$(json_get mqtt.user)"
-MQTT_PASS="$(json_get mqtt.pass)"
-
 TOPIC_POWER="$(json_get topics.status_power)"
 TOPIC_ACTION="$(json_get topics.status_action)"
 TOPIC_LAST_COMMAND="$(json_get topics.status_last_command)"
@@ -88,25 +83,10 @@ mqtt_pub() {
 
     [[ -n "${topic}" ]] || return 0
 
-    if [[ -n "${MQTT_USER}" ]]; then
-        mosquitto_pub \
-            -h "${MQTT_HOST}" \
-            -p "${MQTT_PORT}" \
-            -u "${MQTT_USER}" \
-            -P "${MQTT_PASS}" \
-            -t "${topic}" \
-            -m "${payload}" \
-            -r \
-            -q 1
-    else
-        mosquitto_pub \
-            -h "${MQTT_HOST}" \
-            -p "${MQTT_PORT}" \
-            -t "${topic}" \
-            -m "${payload}" \
-            -r \
-            -q 1
-    fi
+    # Keep payload bytes on stdin and credentials in the existing JSON config.
+    # The shared Python helper owns all MQTT transport and reports failure via rc.
+    printf '%s' "${payload}" | python3 "${BASE_DIR}/../homelab_mqtt.py" \
+        --config "${CONFIG_FILE}" --topic "${topic}" --qos 1 --retain > /dev/null
 }
 
 write_action() {

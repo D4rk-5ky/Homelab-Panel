@@ -9,6 +9,8 @@
 #   3. oprettet som Home Assistant MQTT Discovery button når HA er enabled.
 # Payload skal samtidig findes i homelab-control/config.json -> commands på den
 # remote enhed. Arbitrære shell-kommandoer accepteres aldrig fra MQTT.
+# confirm er kun en browser-dialog; Home Assistant viser ikke denne dialog.
+# Alle tilgængelige device/button-felter er forklaret i README.md.
 
 REMOTE_DEVICES = {
     "aoostar_wtr": {

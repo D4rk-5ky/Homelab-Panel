@@ -68,6 +68,11 @@ PANEL_JOB_MAX_ENTRIES = max(1, int(PANEL_JOB_MAX_ENTRIES))
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(APP_DIR)
+# The panel and agent shell helpers share the same one-shot Paho publisher.
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from homelab_mqtt import publish_message
+
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 PANEL_STATE_DIR = os.path.join(APP_DIR, "state")
 PANEL_HISTORY_FILE = os.path.join(PANEL_STATE_DIR, "panel_action_history.json")
@@ -399,25 +404,12 @@ def combined_device_jobs(device_id: str, device: dict) -> list[dict]:
 
 
 def mqtt_publish(topic: str, payload: str) -> tuple[bool, str]:
-    cmd = [
-        "mosquitto_pub",
-        "-h", MQTT_CONFIG["host"],
-        "-p", str(MQTT_CONFIG["port"]),
-        "-t", topic,
-        "-m", payload,
-        "-q", str(MQTT_CONFIG["qos"]),
-    ]
-
-    if MQTT_CONFIG["retain"]:
-        cmd.append("-r")
-
-    if MQTT_CONFIG["user"]:
-        cmd.extend(["-u", MQTT_CONFIG["user"]])
-
-    if MQTT_CONFIG["pass"]:
-        cmd.extend(["-P", MQTT_CONFIG["pass"]])
-
-    return run_command(cmd)
+    # Keep command publishing separate from the reconnecting telemetry client:
+    # a failed command must not stay queued for a later broker reconnection.
+    return publish_message(
+        MQTT_CONFIG, topic, payload,
+        qos=int(MQTT_CONFIG["qos"]), retain=bool(MQTT_CONFIG["retain"]),
+    )
 
 
 def send_wol(mac: str) -> tuple[bool, str]:

@@ -63,6 +63,9 @@ class HomeAssistantTests(unittest.TestCase):
         publisher = patch.object(self.panel, "publish_mqtt_direct", side_effect=capture)
         publisher.start()
         self.addCleanup(publisher.stop)
+        publisher_mock = patch.object(self.panel, "publish_message", side_effect=AssertionError("Unexpected MQTT publication"))
+        publisher_mock.start()
+        self.addCleanup(publisher_mock.stop)
         # Every subprocess call is blocked, including accidental power actions.
         subprocess_mock = patch.object(self.panel.subprocess, "run", side_effect=AssertionError("Unexpected external command"))
         subprocess_mock.start()

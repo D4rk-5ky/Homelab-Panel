@@ -24,6 +24,39 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.14 — 2026-09-26
+
+### Paho MQTT throughout the application
+
+- Replaced the panel's `mosquitto_pub` command construction with the shared `homelab_mqtt.publish_message()` function. Preserved configured broker/authentication, topic, payload, QoS, retention, dispatch results, and the hard 20-second process timeout.
+- Replaced both credentialed/anonymous `mosquitto_pub` branches in `homelab_control_lib.sh` with the same Paho publisher's CLI. Kept empty-topic no-op, exact payload, QoS 1, retained telemetry, quiet success, and nonzero failure propagation. Removed unused shell MQTT credential variables; Python reads credentials from the existing JSON file.
+- Added `homelab_mqtt.py`: one-shot MQTT 3.1.1 clients, clean sessions, broker-acceptance and send/acknowledgement checks, no automatic retry/reconnect, and explicit uncertain-delivery errors. Failure closes the transport before disconnect can flush queued packets.
+- Paho runs in a disposable Python process with credentials/payload on stdin; timeout kills and waits for the child, covering blocking DNS/connect as well as acknowledgement waits. Shell telemetry now also has a 20-second limit. One-shot keepalive remains 60 seconds; persistent agent keepalive settings are unchanged.
+- Added a documented publishing CLI (`--config`, `--topic`, `--qos`, `--retain`, `--timeout`, `--help`) and internal JSON worker mode (`--request-stdin`). No new configuration keys are needed.
+- All subscriptions already used Paho; there was no `mosquitto_sub` implementation to replace. Existing persistent MQTT clients, web access checks, command allow-lists, retained panel-control rejection, path guards, and power delays remain intact.
+
+### Documentation and tests
+
+- Removed the Mosquitto client-package requirement and command examples from the current README; added publisher usage, all flags, exit codes, completion/timeout semantics, and the continuing MQTT broker requirement.
+- Updated panel example comments, the complete function/command map, and validation notes. Preserved the supplied disclaimer and prior release history.
+- Added tests for publication configuration, failures/timeouts, callback compatibility, panel delegation, CLI input, and the real shell bridge. Added localhost protocol checks using actual Paho for QoS 0/1/2, authentication, retained flags, UTF-8 payloads, refused connections, and absent PUBACK.
+- Extended the existing panel test fixture to block accidental calls to the new publisher.
+- Passed all 27 regression tests, 8 Python compilation checks, 6 shell syntax checks, 4 embedded Python checks, JSON/Jinja parsing, the publisher CLI checks, and function-map coverage for 209 Python/shell definitions. Real Paho protocol tests used a temporary localhost peer; production broker/HA and power operations remain untested.
+- Preserved all 26 original paths; added the shared publisher and its test module. Version advances exactly from 0.0.13 to 0.0.14.
+
+## 0.0.13 — 2026-09-26
+
+### Current-use documentation and release verification
+
+- Preserved all runtime Python, shell, template, service, and test code from the supplied 0.0.12 archive. No runtime behavior, command handling, authentication, path guard, retained-message guard, or power delay changed.
+- Expanded README with an external-command flag reference covering values, units, examples, and command-retention behavior; documented the existing five-card scrolling job lists and saved browser scroll positions.
+- Included the supplied disclaimer wording with Homelab Panel labels and local links to the current README sections, replacing the unrelated project links from the supplied text.
+- Updated the complete function/command map with more precise auth/WoL/listener explanations and shell/service command rationale.
+- Updated comments in both panel configuration examples to explain command retention, browser-only confirmation, and the separate monitor/confirmation workers. Configuration values and all available options are preserved; the remote JSON example already includes all supported fields.
+- Advanced `VERSION` by one patch step from 0.0.12 to 0.0.13, retaining the 0.0.99 → 0.1.0 rollover policy and the existing `VERSIONING.md` filename.
+- Passed all 12 existing regression tests, Python/shell/heredoc syntax checks, JSON/Jinja parsing, config documentation checks, and coverage for 182 Python/shell functions. Live integrations and Linux service/power behavior remain untested.
+- Refreshed `VALIDATION.md` for this release; the final ZIP preserves all 26 original project paths and executable flags and excludes caches, runtime data, and temporary files. External release manifests record original/release SHA-256 values per file.
+
 ## 0.0.12 — 2026-09-26
 
 ### Configurable local Home Assistant device name
