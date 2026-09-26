@@ -182,7 +182,11 @@ REMOTE_DEVICES = {
 # De samme scripts, path-checks og root/sudo-rettigheder bruges som på websiden.
 
 LOCAL_SERVER = {
+    # Overskrift på den lokale sektion i Homelab Panel-websiden.
     "title": "Lokal enhedskontrol",
+    # Navnet på den lokale enhed i Home Assistant. Brug maskinens rigtige navn,
+    # f.eks. "Mac Mini", så HA viser f.eks. "Mac Mini Sluk om 1 minut".
+    "name": "Homelab Panel Host",
     "buttons": [
         {
             "id": "shutdown_delay",

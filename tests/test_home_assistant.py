@@ -94,12 +94,22 @@ class HomeAssistantTests(unittest.TestCase):
         for button in self.panel.LOCAL_SERVER["buttons"]:
             config = buttons[f"homeassistant/button/homelab_local_panel/{button['id']}/config"]
             self.assertEqual(config["name"], button["label"])
+            self.assertEqual(config["device"]["name"], self.panel.LOCAL_SERVER["name"])
             self.assertEqual(json.loads(config["payload_press"]), {"target": "local", "command": button["id"]})
         for config in buttons.values():
             self.assertFalse(config["retain"])
             self.assertEqual(config["command_topic"], "homelab-panel/control")
             self.assertEqual(config["availability_topic"], "homelab-panel/availability")
         self.assertTrue(all(retain for _, _, _, retain in self.published))
+
+    def test_local_device_name_falls_back_to_title_for_old_configs(self):
+        """Existing devices.py files without name retain their previous HA device title."""
+        expected = self.panel.LOCAL_SERVER["title"]
+        self.panel.LOCAL_SERVER.pop("name", None)
+        self.panel.publish_home_assistant_discovery()
+        for config in self.button_configs().values():
+            if config["device"]["identifiers"] == ["homelab_local_panel"]:
+                self.assertEqual(config["device"]["name"], expected)
 
     def test_custom_buttons_and_namespace_do_not_need_code_changes(self):
         """New config IDs become entities; remote 'local' stays separate from host."""

@@ -1717,7 +1717,9 @@ def publish_home_assistant_discovery() -> None:
     # IDs or discovery topics with the host running this panel.
     local_device = {
         "identifiers": ["homelab_local_panel"],
-        "name": str(LOCAL_SERVER.get("title") or "Homelab Panel"),
+        # Keep the webpage section title separate from the Home Assistant device
+        # name. Old devices.py files without ``name`` keep their previous title.
+        "name": str(LOCAL_SERVER.get("name") or LOCAL_SERVER.get("title") or "Homelab Panel"),
         "manufacturer": "Homelab Panel",
         "model": "Local Panel Controls",
     }

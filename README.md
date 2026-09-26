@@ -36,7 +36,7 @@ The following controls are created automatically:
 | Each enabled Wake-on-LAN button | Same configured `wol.label`, under the remote device |
 | Cancel Wake-on-LAN | `Annullér Wake-on-LAN`, under the remote device |
 | Every `REMOTE_DEVICES[...]["mqtt_controls"]["buttons"]` entry | Same configured label, under the remote device |
-| Every `LOCAL_SERVER["buttons"]` entry | Same configured label, under a separate device named from `LOCAL_SERVER["title"]` |
+| Every `LOCAL_SERVER["buttons"]` entry | Same configured label, under a separate device named from `LOCAL_SERVER["name"]` (falls back to `title` for older configs) |
 
 Local buttons act on **the machine running Homelab Panel**. Remote buttons retain their existing remote-device routing. Local and remote buttons can have the same ID without sharing an entity. Navigation, history filters, login, and logout are webpage controls rather than device action entities.
 
@@ -269,7 +269,7 @@ Its remote `config.json` must independently allow `run_watchtower`. The example 
 
 ### Local buttons
 
-`LOCAL_SERVER` contains `title` and `buttons`. Each button has `id`, `label`, `script`, `color`, `icon`, and `confirm`, with the same display meanings as above. `script` is a direct executable filename inside the project's `scripts/` directory. Both web and HA commands select an existing button ID; incoming MQTT cannot supply a script path or command arguments.
+`LOCAL_SERVER` contains `title`, optional `name`, and `buttons`. `title` is the local section heading on the Homelab Panel webpage. `name` is the Home Assistant device name and should normally be the real machine/device name, for example `"Mac Mini"`; Home Assistant combines that device name with each button label. Older `devices.py` files without `name` remain compatible and use `title` as the HA device name. Each button has `id`, `label`, `script`, `color`, `icon`, and `confirm`, with the same display meanings as above. `script` is a direct executable filename inside the project's `scripts/` directory. Both web and HA commands select an existing button ID; incoming MQTT cannot supply a script path or command arguments.
 
 ## Remote agent configuration: `homelab-control/config.json`
 

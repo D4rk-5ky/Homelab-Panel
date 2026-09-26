@@ -84,7 +84,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `ha_state_topic()` | Builds the per-device retained HA state topic from config. |
 | `ha_device_block()` | Builds common Home Assistant device-registry metadata so all entities group under one device. |
 | `publish_home_assistant_button()` | Builds one MQTT button discovery document from a configured label, target payload and device; centralizes publication and explicitly disables retention of button commands while preserving configurable discovery retention. |
-| `publish_home_assistant_discovery()` | Publishes remote sensors, enabled Wake/cancel buttons, every remote MQTT button, and every local button. Existing remote IDs remain stable; local entities use the separate `homelab_local_panel` namespace. The same configuration drives web and HA controls. |
+| `publish_home_assistant_discovery()` | Publishes remote sensors, enabled Wake/cancel buttons, every remote MQTT button, and every local button. Existing remote IDs remain stable; local entities use the separate `homelab_local_panel` namespace and take their HA device name from `LOCAL_SERVER.name`, falling back to `LOCAL_SERVER.title` for older configs. The same configuration drives web and HA controls. |
 | `publish_home_assistant_snapshot()` | Republishes panel availability, discovery and available cached device states on broker connect or HA birth. Cached states avoid pinging inside the MQTT callback; the monitor supplies subsequent fresh state. |
 | `publish_home_assistant_state()` | Publishes combined status, ping, uptime, command/job and expected-state JSON for HA entities. |
 | `monitor_device_transition()` | Persists true combined-state transitions and previous-state duration, marking unexpected offline as errors. |
@@ -222,7 +222,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 ## Configuration files
 
 - `homelab-panel/config.example.py` — all panel/MQTT/auth/Home Assistant/monitor/history/job options. Active `config.py` is local-only and ignored.
-- `homelab-panel/devices.example.py` — device capabilities, WoL retry, status topics, expected-state defaults, confirmation and dynamic command buttons. Active `devices.py` is local-only and ignored.
+- `homelab-panel/devices.example.py` — device capabilities, WoL retry, status topics, expected-state defaults, confirmation, dynamic command buttons, and the separate local Home Assistant device `name`. Active `devices.py` is local-only and ignored.
 - `homelab-control/config.example.json` — remote broker/client/topics/timing and strict command-to-script allow-list. Active `config.json` is local-only and ignored.
 
 ## Repository hygiene / `.gitignore`
@@ -264,7 +264,7 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 - On broker connect or HA birth, `publish_home_assistant_snapshot()` offers discovery, online availability and cached sensor state. Subsequent monitor passes publish fresh state.
 - Remote discovery topics remain `<discovery_prefix>/button/homelab_panel_<device_id>/<button_id>/config`; Wake uses the existing `wake` ID. Local buttons use `<discovery_prefix>/button/homelab_local_panel/<button_id>/config` to avoid a remote device called `local` colliding with the host.
 - Remote `payload_press` is `{"device_id":"...","command":"..."}`. Local `payload_press` is `{"target":"local","command":"..."}`. Both go to the panel control topic and select configured IDs rather than executable text.
-- HA button labels come from the same `label` fields as web buttons. Local grouping uses `LOCAL_SERVER.title`. Cancel-WoL stays registered in HA and refuses cancellation without an active job.
+- HA button labels come from the same `label` fields as web buttons. Local grouping uses `LOCAL_SERVER.name` as the Home Assistant device name; older configs without `name` fall back to `LOCAL_SERVER.title`. This keeps the webpage section heading separate from the HA device identity. Cancel-WoL stays registered in HA and refuses cancellation without an active job.
 - Navigation/history filters/login/logout do not represent device actions and have no HA button entities.
 - Discovery creates entities, not custom dashboard cards. Python configuration is loaded at startup; adding/editing buttons requires a panel restart. Removing a config entry prevents its execution but does not automatically delete a retained discovery document.
 
@@ -307,6 +307,7 @@ Tests use real Flask/Jinja with example configuration, temporary runtime files, 
 | `capture()` (nested) | Records MQTT publication arguments for assertions without contacting a broker. |
 | `button_configs()` | Extracts button discovery JSON from captured messages for entity/payload checks. |
 | `test_every_web_action_is_discovered_with_its_label()` | Verifies every example remote/WoL/local action, label, stable ID, topic, and non-retained command. |
+| `test_local_device_name_falls_back_to_title_for_old_configs()` | Removes the new local `name` setting and verifies older configs still publish the previous `title` as the HA device name. |
 | `test_custom_buttons_and_namespace_do_not_need_code_changes()` | Adds custom local/remote buttons via config and checks discovery plus actual shared dispatch; a remote device named local cannot collide with the panel host. |
 | `test_discovery_disabled_disconnected_or_missing_control_topic()` | Checks discovery opt-out, broker gating, and omission of buttons when no usable command topic exists. |
 | `test_web_and_mqtt_local_buttons_share_execution()` | Checks that web/MQTT choose the same configured script and reject unknown/ambiguous targets or path-like IDs. |

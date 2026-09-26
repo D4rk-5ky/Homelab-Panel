@@ -24,6 +24,21 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.12 — 2026-09-26
+
+### Configurable local Home Assistant device name
+
+- Added optional `LOCAL_SERVER["name"]` for the local Home Assistant MQTT device name, separate from the webpage-only `LOCAL_SERVER["title"]`.
+- Home Assistant local button discovery now uses `LOCAL_SERVER.name`, so the device name can be the actual host name and HA can present button names in the same device/entity naming pattern as remote devices.
+- Preserved backwards compatibility: active `devices.py` files without `name` continue using `LOCAL_SERVER.title`, then `"Homelab Panel"` as the final fallback.
+- No discovery topic, identifier, unique ID, command payload, script mapping, authentication, retained-message guard, or local execution safety behavior changed.
+
+### Documentation and verification
+
+- Updated `devices.example.py`, README current-use documentation, the complete code map, tests, and validation notes for the new local device-name option.
+- Added regression coverage that checks both the explicit local HA device name and the old-config title fallback.
+- Preserved the existing README disclaimer wording unchanged.
+
 ## 0.0.11 — 2026-09-26
 
 ### Automatic Home Assistant action buttons
