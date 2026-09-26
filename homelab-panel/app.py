@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import hmac
@@ -451,7 +452,9 @@ def ping_host(ip: str) -> bool:
     if not ip:
         return False
 
-    ok, _ = run_command(["ping", "-c", "1", "-W", "1", ip], timeout=3)
+    # macOS uses milliseconds for -W; Linux uses seconds.
+    reply_timeout = "1000" if sys.platform == "darwin" else "1"
+    ok, _ = run_command(["ping", "-c", "1", "-W", reply_timeout, ip], timeout=3)
     return ok
 
 

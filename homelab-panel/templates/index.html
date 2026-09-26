@@ -29,8 +29,9 @@
     .logout-button { width:auto; padding:8px 12px; background:#374151; font-size:14px; }
     .flash { border-radius:10px; padding:12px; margin-bottom:12px; font-size:14px; line-height:1.4; }
     .flash.success { background:#064e3b; color:#d1fae5; } .flash.error { background:#7f1d1d; color:#fee2e2; }
-    .job-list { display:grid; gap:8px; }
-    .job { background:#111827; border:1px solid #374151; border-radius:9px; padding:10px; font-size:14px; }
+    .job-list { display:grid; gap:8px; max-height:35rem; overflow-y:auto; margin:0; padding:0; list-style:none; scrollbar-gutter:stable; }
+    .job-list:focus-visible { outline:2px solid #60a5fa; outline-offset:4px; }
+    .job { background:#111827; border:1px solid #374151; border-radius:9px; padding:10px; font-size:14px; min-width:0; overflow-wrap:anywhere; }
     .job.running,.job.queued,.job.waiting,.job.confirming { border-color:#f59e0b; }
     .job.success { border-color:#10b981; } .job.failure { border-color:#ef4444; }
     .job-title { font-weight:bold; } .job-meta { color:#9ca3af; margin-top:4px; }
@@ -95,23 +96,24 @@
 
   <div class="card">
     <h2>🧰 Jobstatus</h2>
+    <p class="muted">Nyeste jobs vises først. Scroll i listen for at se ældre jobs.</p>
     <p class="muted">Jobs kan køre parallelt på samme eller forskellige hosts. Remote success/failure kommer fra Homelab Control scriptets exit code; MQTT publish alene tæller kun som afsendt.</p>
     <div class="status-grid">
       {% for device_id, device in remote_devices.items() %}
         {% set st = remote_statuses[device_id] %}
         <div class="status-box">
           <div class="status-title">{{ device['title'] }}</div>
-          <div class="job-list">
-            {% for job in st['jobs'][:8] %}
-              <div class="job {{ job.get('status','') }}">
+          <ul class="job-list" tabindex="0" aria-label="Jobstatus for {{ device['title'] }}" data-device-id="{{ device_id }}">
+            {% for job in st['jobs'] %}
+              <li class="job {{ job.get('status','') }}">
                 <div class="job-title">{{ job.get('label') or job.get('command') or job.get('job_id') }} · {{ job.get('status','ukendt') }}</div>
                 <div>{{ job.get('message','') }}</div>
                 <div class="job-meta">{{ job.get('updated_at') or job.get('queued_at','') }}{% if job.get('runtime_seconds') is not none %} · runtime {{ job.get('runtime_seconds') }}s{% endif %} · {{ job.get('job_id','') }}</div>
-              </div>
+              </li>
             {% else %}
-              <div class="muted">Ingen jobs endnu.</div>
+              <li class="muted">Ingen jobs endnu.</li>
             {% endfor %}
-          </div>
+          </ul>
         </div>
       {% endfor %}
     </div>
@@ -157,5 +159,35 @@
     </div>
   </div>
 </div>
+<script>
+  document.querySelectorAll('.job-list').forEach((list) => {
+    const jobs = Array.from(list.querySelectorAll('.job'));
+    const storageKey = `homelab-job-scroll:${location.pathname}:${list.dataset.deviceId}`;
+    const fitFiveJobs = () => {
+      if (jobs.length < 5) return;
+      const height = jobs[4].getBoundingClientRect().bottom - jobs[0].getBoundingClientRect().top;
+      list.style.maxHeight = `${Math.ceil(height)}px`;
+    };
+
+    fitFiveJobs();
+    // Keep each device's scroll position when the page refreshes automatically.
+    try { list.scrollTop = Number(sessionStorage.getItem(storageKey)) || 0; } catch (_) {}
+    list.addEventListener('scroll', () => {
+      try { sessionStorage.setItem(storageKey, String(list.scrollTop)); } catch (_) {}
+    }, { passive: true });
+
+    // Recalculate after text wraps differently on a narrower or wider screen.
+    if ('ResizeObserver' in window) {
+      let previousWidth;
+      new ResizeObserver(([entry]) => {
+        if (entry.contentRect.width === previousWidth) return;
+        previousWidth = entry.contentRect.width;
+        fitFiveJobs();
+      }).observe(list);
+    } else {
+      window.addEventListener('resize', fitFiveJobs);
+    }
+  });
+</script>
 </body>
 </html>
