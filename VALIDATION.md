@@ -1,105 +1,132 @@
-# Homelab Panel 0.0.14 — validation
+# Homelab Panel 0.0.18 — validation
 
 ## Result and scope
 
-Created **0.0.14** from the preceding **0.0.13** release. All **26 baseline project paths** remain; **2 files added**, **9 updated**, and **17 unchanged**. The same 26 paths from the original uploaded **0.0.12** archive are also preserved. The final ZIP contains **28 files** under `Homelab-Panel-0.0.14/`.
+Created **0.0.18** from the packaged **0.0.17** baseline. This release reorganizes component-local configuration and implementation modules without changing configured MQTT topics/payloads, Home Assistant entity IDs, command allow-lists, button labels/confirmations, runtime state locations, or power-action semantics.
 
-Baseline 0.0.13 ZIP SHA-256: `c196c972a8d7e47b0206ccd152211f36257fd1f7fb6499022b92ea32f0a0a637`.
+## Structure changes
 
-Original uploaded 0.0.12 ZIP SHA-256: `a47f923f10850a02b09a5b01e3ee451d44f3a14a8357e02cf65fff26525e426f`.
+- Panel configuration moved to `homelab-panel/configs/`:
+  - tracked `config.example.py` and `devices.example.py`;
+  - active `config.py` and `devices.py` are expected there and remain excluded from clean releases;
+  - `configs/__init__.py` makes the directory an explicit Python package.
+- Panel implementation modules moved unchanged to `homelab-panel/modules/`:
+  - `panel_actions.py`;
+  - `panel_home_assistant.py`;
+  - `panel_mqtt.py`;
+  - `modules/__init__.py` makes the directory an explicit package.
+- Remote-agent configuration moved to `homelab-control/configs/`; both Python entry points load `configs/config.json` relative to their own location.
+- `homelab_control_lib.sh` moved to `homelab-control/modules/` and now derives the agent root from its parent directory before resolving `state/`, `logs/`, and `configs/config.json`.
+- `scripts/homelab_action_common.sh` now locates the remote module and config under those new directories.
+- Project-root `homelab_mqtt.py` intentionally remains at the root because it is both an independently executable CLI and a shared one-shot publisher used by multiple components.
 
-## What changed
+## Independent execution/path-resolution checks
 
-- The panel and Bash agent status library now share `homelab_mqtt.py` for Paho publishing. No runtime source invokes `mosquitto_pub` or `mosquitto_sub`; all subscriptions already used Paho.
-- Panel publications keep configured host/port/authentication, topic/payload, QoS/retention, `(ok, message)` results, and the 20-second process timeout.
-- Shell telemetry keeps QoS 1, retained messages, exact stdin payloads, empty-topic no-op, quiet success, and failure propagation. Its MQTT credentials are read by Python directly from the existing config. Telemetry now also has a 20-second timeout.
-- Each publication uses a disposable Python process and Paho client. Credentials are sent on stdin rather than argv. The parent kills and waits for a timed-out child, including during DNS/connect stalls. Clients never reconnect, and failure after sending reports that delivery may be unknown.
-- Persistent status/subscription clients remain unchanged. One-shot publication uses MQTT 3.1.1 and a fixed 60-second keepalive. No new configuration fields are required.
-- README documents installation without Mosquitto client tools, the publishing CLI and every flag, exit codes, timeout/completion semantics, and remaining broker requirements. Updated code map, configuration comments, version history, tests, and this report; retained the supplied disclaimer.
+Temporary active configs were copied from the examples only for these checks and removed afterwards. No production broker/device was contacted.
 
-## Verification
+From `/tmp` rather than the project directory, isolated dependency stubs were used to import/start the path-resolution portions of the applications:
 
-Environment: Darwin 24.6.0, Python 3.13.15, Flask 3.1.3, Paho MQTT 2.1.0, Jinja 3.1.6.
+- `homelab-panel/app.py` successfully resolved:
+  - `homelab-panel/configs/config.py`;
+  - `homelab-panel/configs/devices.py`;
+  - `modules.panel_actions`, `modules.panel_home_assistant`, and `modules.panel_mqtt`.
+- `homelab_control_command_listener.py` resolved `homelab-control/configs/config.json`.
+- `homelab_control_status_indicator.py` resolved `homelab-control/configs/config.json`.
+- Sourcing `homelab-control/modules/homelab_control_lib.sh` from `/tmp` resolved its agent root and new config path correctly.
+- Sourcing `scripts/homelab_action_common.sh` from `/tmp` resolved the new remote module/config paths correctly.
 
-### Regression and protocol checks
+These checks verify that the entry points do not depend on the current shell working directory and remain independently runnable. They do not replace real Flask/Paho integration tests.
 
-**27 tests passed** with no skipped tests:
+## Configuration/module preservation checks
 
-- The 12 existing panel/HA tests still pass, covering discovery, local naming, shared routing, access gates, retained panel-command rejection, path containment, and rendering all four pages.
-- Publisher unit tests cover exact config/payload/QoS/retention forwarding, unauthenticated defaults, rejected connections, socket/Paho errors, invalid inputs, timeout cleanup, callback API compatibility, and private stdin requests with bounded subprocesses.
-- Panel delegation and helper CLI tests cover return values, JSON config, verbatim stdin, flags, safe help, and nonzero failures.
-- The real Bash library runs against a transport shim to verify its Python command arguments, payload bytes, empty-topic behavior, suppressed success output, preserved error output, and propagated exit status. This never invokes a power script.
-- Actual Paho network code and the production child-process path are exercised against a minimal MQTT peer bound only to `127.0.0.1` on an ephemeral port. Tests check authentication and clean-session flags, topic/UTF-8 payload bytes, retained flags, QoS 0 send, QoS 1 PUBACK, and QoS 2 PUBREC/PUBREL/PUBCOMP. Refused CONNACK sends no command; withheld PUBACK causes failure and transport closure without retry.
-- Localhost socket tests required execution outside the default sandbox because it blocks listener sockets. They then passed; no external broker or homelab host was contacted.
+- The three moved panel implementation modules are byte-for-byte identical to their 0.0.17 versions; only their paths changed.
+- `homelab-control/configs/config.example.json` is byte-for-byte identical to the 0.0.17 remote JSON example.
+- The two moved Python configuration examples have identical Python ASTs to 0.0.17; only path comments were updated. No configuration key/value behavior changed.
+- `.gitignore` now excludes only the active files at the new config paths while retaining examples/package markers.
 
-### Static and CLI checks
+## Static/configuration checks
 
-- All **8 Python source/config/test files** compile in memory.
-- All **6 shell files** pass `bash -n`; all **4 embedded Python heredocs** compile.
-- The remote JSON example and all **4 Jinja templates** parse.
-- All **3 systemd examples** pass structural section/directive checks; full systemd validation is unavailable on this macOS host.
-- All **209 Python/shell function definitions** have code-map entries, including nested/test helpers; existing browser callbacks remain documented.
-- Configuration examples cover existing options; README covers all example option names and every new publisher flag. Panel config imports match the example. Config values/parsed code are unchanged; edits to the panel config example are comments only.
-- Actual `homelab_mqtt.py --help` succeeds without network activity. Invalid QoS exits with argument-error status 2.
-- AST comparison shows `mqtt_publish()` is the only changed existing panel function. The app also imports the shared module from the project root. Remote listener/status Python files, service files, templates, device configuration, and all power action scripts are byte-identical to 0.0.13.
-- Existing version history and both disclaimer sections are preserved.
+- All **13 Python files** compile in memory without generating bytecode.
+- All **6 shell scripts/modules** pass `bash -n`.
+- All **4 embedded Python heredocs** in `homelab-control/modules/homelab_control_lib.sh` compile.
+- `homelab-control/configs/config.example.json` parses as JSON.
+- All **4 Jinja templates** parse successfully with the available Jinja runtime.
+- All **3 systemd service examples** retain `[Unit]`, `[Service]`, and `ExecStart=`.
+- `commented_code_map.md` covers all **240 Python/shell function definitions** in the release.
+- `homelab_mqtt.py --help` was executed successfully with an isolated Paho import stub. It still exposes `--config`, `--request-stdin`, `--topic`, `--qos`, `--retain`, `--timeout`, and standard `-h/--help` without contacting a broker.
 
-### ZIP checks
+## Regression-test scope
 
-- Compared final relative paths against both the original uploaded archive and 0.0.13: no original files removed or renamed; both new source/test files included.
-- Verified ZIP integrity, unique names, per-file content hashes, and permissions against the final tree; original executable flags are preserved.
-- Excluded Python caches/bytecode, build caches, temporary files, runtime data/logs, active configs, and dependency environments. No forbidden files are present.
-- The accompanying manifest includes original-upload, baseline, and release SHA-256 values per file; the checksum file identifies the ZIP.
-
-## Reproduce
-
-From the extracted project root, using Python 3.10+ with Flask and Paho installed:
+The normal command was attempted:
 
 ```bash
 python3 -B -m unittest discover -s tests -v
-python3 homelab_mqtt.py --help
 ```
 
-The full test suite requires permission to bind temporary localhost sockets. It does not use the configured production broker. `-B` disables import-time bytecode, `-m unittest` runs the test runner, `discover` locates tests, `-s tests` selects their directory, and `-v` prints individual results.
+Test discovery cannot import either test module because `paho-mqtt` is not installed in this sandbox (`ModuleNotFoundError: No module named 'paho'`). Flask is also not installed. Therefore the full real-dependency regression/wire suite could not be rerun here.
+
+The test source was updated for the new layout:
+
+- `load_panel()` loads the examples as `configs.config` and `configs.devices` from `homelab-panel/configs/`;
+- the shell bridge fixture mirrors `homelab-control/configs/` and `homelab-control/modules/`.
+
+All test files compile successfully. No production MQTT broker, Home Assistant instance, Wake-on-LAN target, shutdown/reboot operation, or privileged systemd action was used.
+
+## Baseline manifest comparison
+
+The 0.0.17 baseline contains **31 files**. The 0.0.18 source tree contains **33 files**.
+
+Seven old paths were intentionally removed because those files were relocated:
+
+- `homelab-control/config.example.json`
+- `homelab-control/homelab_control_lib.sh`
+- `homelab-panel/config.example.py`
+- `homelab-panel/devices.example.py`
+- `homelab-panel/panel_actions.py`
+- `homelab-panel/panel_home_assistant.py`
+- `homelab-panel/panel_mqtt.py`
+
+Nine paths were intentionally added:
+
+- `homelab-control/configs/config.example.json`
+- `homelab-control/modules/homelab_control_lib.sh`
+- `homelab-panel/configs/__init__.py`
+- `homelab-panel/configs/config.example.py`
+- `homelab-panel/configs/devices.example.py`
+- `homelab-panel/modules/__init__.py`
+- `homelab-panel/modules/panel_actions.py`
+- `homelab-panel/modules/panel_home_assistant.py`
+- `homelab-panel/modules/panel_mqtt.py`
+
+Eleven existing paths changed in place:
+
+- `.gitignore`
+- `README.md`
+- `VERSION`
+- `VERSIONING.md`
+- `commented_code_map.md`
+- `homelab-control/homelab_control_command_listener.py`
+- `homelab-control/homelab_control_status_indicator.py`
+- `homelab-panel/app.py`
+- `scripts/homelab_action_common.sh`
+- `tests/test_home_assistant.py`
+- `tests/test_mqtt_publish.py`
+
+No other baseline path changed.
+
+## Packaging requirements
+
+Before packaging, temporary active configs and generated `__pycache__`/`.pyc` files from path-resolution testing were removed. The final ZIP is checked for:
+
+- exactly the expected **33** source files;
+- no duplicate ZIP entries;
+- successful archive integrity testing;
+- extracted-file hashes matching the release tree;
+- executable/non-executable permissions matching the release tree;
+- no active local config files;
+- no `__pycache__`, `.pyc`, `.pyo`, build cache, temporary files, runtime logs, or runtime state.
 
 ## Limits
 
-- No production MQTT broker, ACL policy, Home Assistant registry, or real device integration was exercised. The localhost peer covers specific MQTT exchanges rather than a complete broker implementation.
-- No real Wake-on-LAN, shutdown/reboot/cancellation, privileged sudo/root operation, or user-provided job was executed.
-- Linux `/proc` boot/uptime behavior and service startup/restart remain untested; `systemd-analyze` is unavailable.
-- Browser layout/keyboard scrolling was not tested interactively; templates render in the existing Flask tests and their source is unchanged.
-- The older Paho constructor/callback path is checked with a test double; real wire tests used the installed Paho 2.1.0.
-- Existing remote-agent retained-command behavior and power-confirmation semantics are unchanged. Transport completion still does not prove that a remote action ran; a missing acknowledgement can leave delivery uncertain.
-
-## Changes against 0.0.13
-
-| Project-relative path | Content status |
-|---|---|
-| `.gitignore` | Unchanged |
-| `README.md` | Updated |
-| `VALIDATION.md` | Updated |
-| `VERSION` | Updated |
-| `VERSIONING.md` | Updated |
-| `commented_code_map.md` | Updated |
-| `homelab-control/config.example.json` | Unchanged |
-| `homelab-control/homelab-control-command-listener.service` | Unchanged |
-| `homelab-control/homelab-control-status-indicator.service` | Unchanged |
-| `homelab-control/homelab_control_command_listener.py` | Unchanged |
-| `homelab-control/homelab_control_lib.sh` | Updated |
-| `homelab-control/homelab_control_status_indicator.py` | Unchanged |
-| `homelab-panel/app.py` | Updated |
-| `homelab-panel/config.example.py` | Updated |
-| `homelab-panel/devices.example.py` | Unchanged |
-| `homelab-panel/homelab-controll.service` | Unchanged |
-| `homelab-panel/templates/history.html` | Unchanged |
-| `homelab-panel/templates/index.html` | Unchanged |
-| `homelab-panel/templates/login.html` | Unchanged |
-| `homelab-panel/templates/mqtt_diagnostics.html` | Unchanged |
-| `homelab_mqtt.py` | Added |
-| `scripts/homelab_action_common.sh` | Unchanged |
-| `scripts/reboot_cancel.sh` | Unchanged |
-| `scripts/reboot_delay.sh` | Unchanged |
-| `scripts/shutdown_cancel.sh` | Unchanged |
-| `scripts/shutdown_delay.sh` | Unchanged |
-| `tests/test_home_assistant.py` | Updated |
-| `tests/test_mqtt_publish.py` | Added |
+- Full Flask/Paho unit and real-wire tests require those installed dependencies and were not available in this sandbox.
+- No production broker, Home Assistant instance, remote homelab device, or actual power action was contacted/executed.

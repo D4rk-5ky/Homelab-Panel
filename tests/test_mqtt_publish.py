@@ -176,9 +176,14 @@ class PublisherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             control = root / 'homelab-control'
-            control.mkdir()
-            shutil.copyfile(ROOT / 'homelab-control/homelab_control_lib.sh', control / 'lib.sh')
-            shutil.copyfile(ROOT / 'homelab-control/config.example.json', control / 'config.json')
+            modules = control / 'modules'
+            configs = control / 'configs'
+            modules.mkdir(parents=True)
+            configs.mkdir()
+            lib = modules / 'homelab_control_lib.sh'
+            config = configs / 'config.json'
+            shutil.copyfile(ROOT / 'homelab-control/modules/homelab_control_lib.sh', lib)
+            shutil.copyfile(ROOT / 'homelab-control/configs/config.example.json', config)
             shim = root / 'python3'
             shim.write_text(f'''#!{sys.executable}
 import json,os,sys
@@ -195,16 +200,16 @@ os.execv(sys.executable,[sys.executable,*sys.argv[1:]])
             env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'], 'CAPTURE': str(capture)}
             for rc in (0, 7):
                 env['PUBLISH_RC'] = str(rc)
-                result = subprocess.run(['bash', '-c', 'source "$1"; mqtt_pub "device/state" "$2"', 'check', str(control / 'lib.sh'), 'æ\n trailing '], env=env, capture_output=True, text=True)
+                result = subprocess.run(['bash', '-c', 'source "$1"; mqtt_pub "device/state" "$2"', 'check', str(lib), 'æ\n trailing '], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, rc, result.stderr)
                 self.assertEqual(result.stdout, '')
                 if rc:
                     self.assertIn('publish failed', result.stderr)
                 record = json.loads(capture.read_text())
                 self.assertEqual(record['payload'], 'æ\n trailing ')
-                self.assertEqual(record['args'][1:], ['--config', str(control / 'config.json'), '--topic', 'device/state', '--qos', '1', '--retain'])
+                self.assertEqual(record['args'][1:], ['--config', str(config), '--topic', 'device/state', '--qos', '1', '--retain'])
             capture.unlink()
-            result = subprocess.run(['bash', '-c', 'source "$1"; mqtt_pub "" "unused"', 'check', str(control / 'lib.sh')], env=env, capture_output=True, text=True)
+            result = subprocess.run(['bash', '-c', 'source "$1"; mqtt_pub "" "unused"', 'check', str(lib)], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(capture.exists())
 

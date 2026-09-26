@@ -16,6 +16,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `load_json_file()` | Loads a JSON runtime file with a safe default on missing/corrupt data; runtime state should not crash the panel. |
 | `save_json_file_atomic()` | Writes JSON via temporary file + replace; prevents readers seeing partially written state. |
 | `get_device_button()` | Finds a configured mqtt_controls button by ID; the same allow-list drives web, panel MQTT, jobs and HA. |
+| `resolve_confirmation_text()` | Replaces the optional `$TITLE` token with the owning device title for browser prompts; literal text remains unchanged and the template performs JSON-safe JavaScript encoding. |
 | `get_related_status_topic()` | Returns an explicit status topic or derives a sibling from last_message; keeps older active configs compatible. |
 | `get_hostname_topic_for_status_cfg()` | Gets/derives the remote hostname topic; older devices.py files can expose hostname without immediate edits. |
 | `get_uptime_topic_for_status_cfg()` | Gets/derives the remote uptime topic; older devices.py files can expose uptime/HA sensor without immediate edits. |
@@ -23,6 +24,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `get_boot_id_topic_for_status_cfg()` | Gets/derives boot ID topic; supports boot detection without forcing immediate config migration. |
 | `get_boot_time_topic_for_status_cfg()` | Gets/derives boot-time topic; provides boot metadata while keeping old configs valid. |
 | `get_device_category()` | Resolves an event/job category from the button or command; powers history filtering and job grouping. |
+| `_sync_mqtt_connected()` | Mirrors MQTT runtime connectivity into the legacy module-level `MQTT_CONNECTED` flag so existing callers/tests keep working after transport ownership moved to `panel_mqtt.py`. |
+| `_device_status_cache_snapshot()` | Copies the monitor cache under lock for HA birth snapshots; keeps lock ownership in `app.py` while the HA module receives an isolated status dictionary. |
 | `load_runtime_state_unlocked()` | Loads persistent per-device runtime/expected-state data; state survives panel restart. |
 | `save_runtime_state_unlocked()` | Atomically saves runtime state; avoids corruption during monitor updates. |
 | `get_device_runtime()` | Returns one device runtime state under lock; callers cannot mutate shared data unsafely. |
@@ -37,16 +40,16 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `record_device_event()` | Creates a normalized categorized history record and appends it; one event schema is used across power, MQTT, availability and jobs. |
 | `active_job_status()` | Defines which lifecycle states count as active; UI logic has one source of truth. |
 | `combined_device_jobs()` | Merges panel jobs with retained remote jobs and sorts newest-first; dashboard can show parallel work from both sides. |
-| `mqtt_publish()` | Delegates panel commands to the shared Paho `publish_message()` with the existing MQTT configuration, QoS and retain setting; preserves the `(ok, message)` dispatch contract and 20-second timeout. |
-| `send_wol()` | Sends a Wake-on-LAN magic packet through wakeonlan; isolates the OS command from retry/orchestration logic. |
-| `run_local_script()` | Resolves a direct local action filename only inside `PROJECT_ROOT/scripts`, verifies it is executable, and runs it without `shell=True`; shared power helpers stay centralized and path traversal is rejected. |
-| `execute_local_action()` | Looks up a local button ID in `LOCAL_SERVER.buttons`, reuses `run_local_script()`, and formats the result for both web and panel MQTT; clients cannot supply a script path. |
+| `mqtt_publish()` | Compatibility/dependency boundary that delegates one-shot command publication to `PanelMqttRuntime.publish_command()`; callers keep the existing `(ok, message)` contract while MQTT transport logic stays out of Flask routing/state code. |
+| `send_wol()` | Thin compatibility delegate to `PanelActionManager.send_wol()`; keeps the old app-level call surface while the action implementation lives in `panel_actions.py`. |
+| `run_local_script()` | Thin compatibility delegate to the action module. The actual path-containment/executable checks are implemented once in `PanelActionManager.run_local_script()`. |
+| `execute_local_action()` | Delegates local button execution to `PanelActionManager`; web and panel MQTT still share the same configured allow-list and cannot supply a script path. |
 | `ping_host()` | Runs one bounded ping with Linux seconds or macOS milliseconds for `-W`; ping remains independent from MQTT. |
-| `set_mqtt_state()` | Caches payload, receive time, retain and QoS metadata; supports status evaluation and diagnostics. |
-| `set_mqtt_connected()` | Tracks broker connectivity and connect/disconnect timestamps/reason; stale cached online data cannot count as current MQTT online. |
-| `get_mqtt_connected()` | Returns current broker connection state. |
-| `get_mqtt_state()` | Returns cached state for one topic; central read path for status/diagnostics. |
-| `get_mqtt_payload_and_age()` | Returns stripped payload plus age in seconds; TTL checks use one implementation. |
+| `set_mqtt_state()` | Compatibility delegate to `PanelMqttRuntime.set_state()`; the MQTT module owns the receive cache and metadata. |
+| `set_mqtt_connected()` | Delegates connection-state changes to `PanelMqttRuntime`, which also updates timestamps/reason and mirrors the legacy app-level boolean. |
+| `get_mqtt_connected()` | Returns the compatibility broker-connected flag and keeps it synchronized with `PanelMqttRuntime`; preserves existing app/test callers. |
+| `get_mqtt_state()` | Delegates one cached-topic lookup to the MQTT runtime. |
+| `get_mqtt_payload_and_age()` | Delegates payload/age calculation to the MQTT runtime so TTL users share one cache implementation. |
 | `action_to_danish()` | Maps internal action states to Danish UI text while preserving unknown custom values. |
 | `result_to_danish()` | Maps lifecycle/result states to Danish UI text while preserving custom values. |
 | `command_to_danish()` | Maps built-in power commands to friendly Danish labels; custom command IDs still remain visible. |
@@ -66,36 +69,29 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `build_remote_device_statuses()` | Uses recent monitor cache when possible and refreshes volatile job/WoL fields; avoids unnecessary page-load pings. |
 | `device_mqtt_online()` | Tests current connected/fresh power=online state; confirmation workers use the same strict MQTT rule. |
 | `device_mqtt_offline()` | Tests current connected/fresh power=offline state; shutdown/reboot are not confirmed merely by publish success. |
-| `wol_job_active()` | Reports whether a device has an active retryable WoL job; controls conditional cancel UI. |
-| `finish_wol_job()` | Finalizes WoL job, expected state and history; success/failure/cancel share one terminal path. |
-| `wol_worker()` | Runs WoL send/retry, ping confirmation and optional MQTT confirmation asynchronously; web requests remain responsive. |
-| `start_wol_job()` | Validates WoL config, checks for an already active job, creates a cancel event and starts the worker; ordinary repeated requests are refused while that job is active. The active check and insertion use separate lock sections. |
-| `cancel_wol_job()` | Signals the active WoL worker to stop and records the request; cancel exists only for an actual active job. |
-| `cancel_power_confirmation()` | Stops an in-progress shutdown/reboot confirmation watcher for the device. |
-| `power_confirmation_worker()` | Confirms shutdown by ping+MQTT offline and reboot by offline-then-online; physical state decides completion. |
-| `execute_remote_action()` | Dispatches only configured WoL/cancel or dynamic device buttons, optionally with JSON job envelope; arbitrary commands remain rejected. |
+| `wol_job_active()` | Delegates active-WoL lookup to `PanelActionManager`; the in-memory WoL job registry is owned by the action module. |
+| `cancel_power_confirmation()` | Delegates cancellation to `PanelActionManager`, which owns confirmation cancel events. |
+| `power_confirmation_worker()` | Compatibility thread target delegating shutdown/reboot confirmation to `PanelActionManager`; `app.py` keeps job/history orchestration while action mechanics stay modular. |
+| `execute_remote_action()` | Delegates allow-listed remote dispatch to `PanelActionManager`; configured WoL/cancel/buttons and JSON job envelopes remain the only accepted action paths. |
 | `execute_and_record_remote_action()` | Creates panel job/history around dispatch and starts expected-state/power confirmation when relevant; web and panel-control MQTT share one path. |
 | `process_panel_control_message()` | Parses panel-control JSON. Remote commands require `device_id`; explicit `target=local` requires a configured local button ID and rejects any `device_id` field. Unknown/missing remote devices never fall back to the panel host. Retained messages are rejected by the receive callback before dispatch. |
 | `process_remote_jobs_message()` | Parses retained remote job snapshots, archives unseen lifecycle changes and merges matching job IDs; script exit results reach the dashboard without using panel-control. |
 | `handle_boot_id_message()` | Detects changed remote boot ID, clears provisional panel command state and records boot event; service restarts with same boot ID do not look like new boots. |
 | `format_duration()` | Formats seconds for uptime/transition display. |
-| `publish_mqtt_direct()` | Publishes HA state/discovery through the existing live Paho client; telemetry can reconnect independently of disposable command publishers. |
-| `home_assistant_enabled()` | Returns the optional HA Discovery feature gate. |
-| `ha_state_topic()` | Builds the per-device retained HA state topic from config. |
-| `ha_device_block()` | Builds common Home Assistant device-registry metadata so all entities group under one device. |
-| `publish_home_assistant_button()` | Builds one MQTT button discovery document from a configured label, target payload and device; centralizes publication and explicitly disables retention of button commands while preserving configurable discovery retention. |
-| `publish_home_assistant_discovery()` | Publishes remote sensors, enabled Wake/cancel buttons, every remote MQTT button, and every local button. Existing remote IDs remain stable; local entities use the separate `homelab_local_panel` namespace and take their HA device name from `LOCAL_SERVER.name`, falling back to `LOCAL_SERVER.title` for older configs. The same configuration drives web and HA controls. |
-| `publish_home_assistant_snapshot()` | Republishes panel availability, discovery and available cached device states on broker connect or HA birth. Cached states avoid pinging inside the MQTT callback; the monitor supplies subsequent fresh state. |
-| `publish_home_assistant_state()` | Publishes combined status, ping, uptime, command/job and expected-state JSON for HA entities. |
+| `publish_mqtt_direct()` | Delegates telemetry/discovery publication to the long-running `PanelMqttRuntime` client; it remains separate from disposable command publishing. |
+| `home_assistant_enabled()` | Delegates the feature gate to `HomeAssistantIntegration.enabled()`. |
+| `publish_home_assistant_discovery()` | Compatibility delegate to `HomeAssistantIntegration.publish_discovery()`; configuration-derived entities/IDs and local naming behavior are unchanged. |
+| `publish_home_assistant_snapshot()` | Compatibility delegate to `HomeAssistantIntegration.publish_snapshot()`; broker-connect/HA-birth behavior still reuses cached status instead of pinging in the MQTT callback. |
+| `publish_home_assistant_state()` | Compatibility delegate to `HomeAssistantIntegration.publish_state()` for retained per-device HA JSON. |
 | `monitor_device_transition()` | Persists true combined-state transitions and previous-state duration, marking unexpected offline as errors. |
 | `status_monitor_loop()` | Periodically evaluates devices independent of page views, updates cache/history and HA state; ping works even when MQTT is absent. |
 | `start_status_monitor()` | Starts exactly one background monitor thread per process. |
-| `build_mqtt_diagnostics()` | Builds broker/subscription/topic metadata and per-device expected-topic table for the diagnostics page. |
-| `on_connect_compat()` | Marks broker connected, subscribes configured/derived device/control topics plus the optional HA birth topic, publishes the HA snapshot and records the MQTT connection event. |
-| `on_disconnect_compat()` | Marks broker disconnected, stores reason and records MQTT disconnect events; cached online is no longer trusted. |
-| `on_message_compat()` | Caches message metadata, rejects retained panel-control messages for both local and remote targets, dispatches fresh commands on workers, republishes HA discovery on its configured online payload, and handles remote jobs/boot/power transitions. |
-| `build_mqtt_client()` | Creates Paho client with compatibility fallback, reconnect delay and optional HA LWT. |
-| `start_mqtt_listener()` | Starts background status monitor and asynchronous MQTT reconnect loop; web/ping stay usable if broker is down at startup. |
+| `build_mqtt_diagnostics()` | Delegates diagnostics construction to `PanelMqttRuntime`, which owns subscriptions, receive cache and connection metadata. |
+| `on_connect_compat()` | Compatibility Paho callback delegating connect/subscription/HA snapshot/history work to `PanelMqttRuntime.on_connect()`. |
+| `on_disconnect_compat()` | Compatibility Paho callback delegating disconnect state/history handling to `PanelMqttRuntime.on_disconnect()`. |
+| `on_message_compat()` | Compatibility Paho callback delegating receive-cache/control/HA-birth/job/boot/power dispatch to `PanelMqttRuntime.on_message()` while preserving the actual panel control handler as the worker target. |
+| `build_mqtt_client()` | Delegates Paho client construction to `PanelMqttRuntime.build_client()`. |
+| `start_mqtt_listener()` | Delegates startup of the status monitor and asynchronous broker loop to `PanelMqttRuntime.start()`. |
 | `login()` | GET/POST login route; creates session only after credential match. |
 | `logout()` | POST route that clears the web session. |
 | `index()` | Main dashboard route; renders cached remote status, jobs, controls and local actions. |
@@ -105,6 +101,62 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `mqtt_diagnostics()` | Protected diagnostics route showing broker/subscription/expected-topic state. |
 | `mqtt_button()` | POST route dispatching any configured dynamic remote button through the shared action path. |
 | `local_button()` | Protected POST route calling `execute_local_action()` and flashing its result; reuses the same local allow-list/runner as HA commands without changing session/token checks. |
+
+
+## `homelab-panel/modules/panel_actions.py`
+
+`PanelActionManager` owns action mechanics that previously made `app.py` large. It receives configuration/state callbacks from the app instead of duplicating persistence, history, status evaluation, or config globals.
+
+| Method | What / why |
+|---|---|
+| `PanelActionManager.__init__()` | Stores dynamic config/callback providers and creates private WoL/power-confirmation locks/state; dependency injection keeps the module reusable and avoids circular imports. |
+| `PanelActionManager.send_wol()` | Builds the fixed `wakeonlan -i BROADCAST MAC` argv and uses the app's bounded `run_command()` callback; no shell text is accepted. |
+| `PanelActionManager.run_local_script()` | Enforces direct filename, scripts-directory containment, file existence and executable permission before invoking the app command runner; preserves local path-traversal safety in one implementation. |
+| `PanelActionManager.execute_local_action()` | Resolves only configured `LOCAL_SERVER.buttons` IDs and calls the injected app-level script runner; web/HA/MQTT clients still cannot provide a script path. |
+| `PanelActionManager.wol_job_active()` | Checks the manager-owned WoL job registry under lock; used by UI/state publishing and duplicate-start prevention. |
+| `PanelActionManager._finish_wol_job()` | Finalizes WoL expected state, panel job, history and active marker through injected app persistence callbacks; all terminal outcomes share one path. |
+| `PanelActionManager._wol_worker()` | Performs retryable WoL sends, bounded ping confirmation and optional fresh MQTT-online confirmation asynchronously; records attempts/results through app callbacks. |
+| `PanelActionManager.start_wol_job()` | Validates configured WoL settings, rejects duplicate active jobs, creates cancellation state and starts `_wol_worker()`. |
+| `PanelActionManager.cancel_wol_job()` | Signals an active WoL job and records the request; it cannot create or cancel arbitrary commands. |
+| `PanelActionManager.cancel_power_confirmation()` | Signals the current shutdown/reboot confirmation event for one device. |
+| `PanelActionManager.power_confirmation_worker()` | Confirms shutdown by ping+MQTT offline and reboot by offline-then-ping+MQTT-online; updates expected state/jobs/history only through app callbacks. |
+| `PanelActionManager.execute_remote_action()` | Resolves configured aliases/buttons, WoL and cancel-WoL; publishes only the configured topic/payload and optional JSON job envelope through the injected MQTT publisher. |
+
+## `homelab-panel/modules/panel_home_assistant.py`
+
+`HomeAssistantIntegration` contains only MQTT Discovery/state formatting and publication. It receives current configs/devices/cache/jobs/WoL state via callbacks, so it does not own panel state or command execution.
+
+| Method | What / why |
+|---|---|
+| `HomeAssistantIntegration.__init__()` | Stores dynamic providers/callbacks for configs, devices, MQTT publication, status cache, jobs and WoL state; keeps HA logic independent of Flask globals. |
+| `HomeAssistantIntegration.enabled()` | Returns the current `HOME_ASSISTANT_CONFIG.enabled` feature gate. |
+| `HomeAssistantIntegration.state_topic()` | Builds the per-device state topic from the configured state prefix. |
+| `HomeAssistantIntegration.device_block()` | Builds stable HA device-registry metadata for a remote panel device. |
+| `HomeAssistantIntegration.publish_button()` | Publishes one configured MQTT button discovery document with non-retained command semantics and configurable retained discovery. |
+| `HomeAssistantIntegration.publish_discovery()` | Publishes remote sensors, WoL/cancel controls, all configured remote buttons, and local buttons in the separate local namespace/name fallback. |
+| `HomeAssistantIntegration.publish_snapshot()` | Publishes panel availability, discovery and cached states on broker connect/HA birth without performing ping I/O in the callback. |
+| `HomeAssistantIntegration.publish_state()` | Publishes retained per-device combined status, ping/MQTT, uptime, command, expected state, latest job and WoL-active JSON. |
+
+## `homelab-panel/modules/panel_mqtt.py`
+
+`PanelMqttRuntime` owns the reconnecting panel MQTT client and its mutable transport state. One-shot command publishing still uses the project-root `homelab_mqtt.py`; this module is specifically the panel's long-running listener/telemetry runtime.
+
+| Method | What / why |
+|---|---|
+| `PanelMqttRuntime.__init__()` | Stores config/dispatch callbacks and creates the receive cache, subscription set, connection metadata, lock and client reference. |
+| `PanelMqttRuntime.publish_command()` | Calls the shared disposable Paho publisher with current panel QoS/retain settings; command failure is never queued for later reconnect. |
+| `PanelMqttRuntime.set_state()` | Stores latest payload, time, retained flag and QoS under lock and returns the previous payload for transition handling. |
+| `PanelMqttRuntime.set_connected()` | Updates connected state plus connect/disconnect timestamps/reason and mirrors it to the app compatibility flag. |
+| `PanelMqttRuntime.get_state()` | Returns an isolated copy of one cached topic record. |
+| `PanelMqttRuntime.get_payload_and_age()` | Returns stripped cached payload and receive age for TTL/status evaluation. |
+| `PanelMqttRuntime.publish_direct()` | Publishes HA/telemetry via the connected long-running client and reports immediate Paho publication failure. |
+| `PanelMqttRuntime._related_topics()` | Applies the app-provided topic helper functions for hostname/uptime/history/jobs/boot metadata without duplicating backwards-compatible derivation rules. |
+| `PanelMqttRuntime.build_diagnostics()` | Builds connection/subscription/cache and per-device expected-topic data for `/mqtt-diagnostics`. |
+| `PanelMqttRuntime.on_connect()` | Marks connected, rebuilds/subscribes the topic set, republishes HA snapshot and records connect/reconnect events. |
+| `PanelMqttRuntime.on_disconnect()` | Marks disconnected with reason and records per-device broker disconnect events. |
+| `PanelMqttRuntime.on_message()` | Caches messages, rejects retained panel controls, dispatches fresh controls on a worker, handles HA birth, then forwards status/job/boot transitions to app callbacks. |
+| `PanelMqttRuntime.build_client()` | Builds Paho MQTT 3.1.1 client with callback-API compatibility, reconnect delay and optional HA availability LWT. |
+| `PanelMqttRuntime.start()` | Starts the app status monitor, configures credentials/callbacks, connects asynchronously and starts the Paho network loop. |
 
 ## Flask routes
 
@@ -120,7 +172,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 ## Panel templates
 
-- `templates/index.html` — combined ping+MQTT status, expected state, current command fields, parallel job dashboard, WoL/cancel, all dynamic MQTT buttons, local controls and diagnostics link.
+- `templates/index.html` — combined ping+MQTT status, expected state, current command fields, parallel job dashboard, WoL/cancel, all dynamic MQTT buttons, local controls and diagnostics link; browser confirmations resolve optional `$TITLE` and use JSON-safe JavaScript string encoding.
 - `templates/history.html` — filtered event timeline plus separate Command/Result/Message history views.
 - `templates/mqtt_diagnostics.html` — broker, subscription and per-device expected-topic diagnostics.
 - `templates/login.html` — minimal username/password session login page.
@@ -129,7 +181,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 | Function | What / why |
 |---|---|
-| `load_config()` | Loads the remote JSON config before constants are derived; remote behavior is explicit per host. |
+| `load_config()` | Loads `configs/config.json` relative to the remote-agent entry point before constants are derived; remote behavior is explicit per host and independent of the shell working directory. |
 | `derive_jobs_topic()` | Uses explicit status_jobs or derives sibling /jobs topic; old configs can upgrade without immediate edits. |
 | `timestamp_now()` | Returns millisecond ISO timestamp; quick queued/running transitions remain distinguishable. |
 | `normalize_command_spec()` | Normalizes legacy string or object command entries into one structure; keeps compatibility while enabling category/timeout metadata. |
@@ -217,17 +269,24 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 - `scripts/shutdown_cancel.sh` — calls `shutdown -c`, restores idle, and records success/failure.
 - `scripts/reboot_delay.sh` — sets reboot pending/current history, calls `shutdown -r +1`, then records success/failure.
 - `scripts/reboot_cancel.sh` — calls `shutdown -c`, restores idle, and records success/failure.
-- `scripts/homelab_action_common.sh` — resolves `SCRIPT_DIR`, then the parent project root, optionally loads `homelab-control/homelab_control_lib.sh` when run as root on a configured agent, and selects root-vs-sudo shutdown execution.
+- `scripts/homelab_action_common.sh` — resolves `SCRIPT_DIR`, then the parent project root, optionally loads `homelab-control/modules/homelab_control_lib.sh` when run as root and `homelab-control/configs/config.json` exists, and selects root-vs-sudo shutdown execution.
+
+## Component-local folders
+
+- `homelab-panel/configs/__init__.py` — marks the panel configuration directory as an explicit Python package. The active `config.py` and `devices.py` are imported from here, so `app.py` remains directly executable without another service or a special working directory.
+- `homelab-panel/modules/__init__.py` — marks the panel implementation directory as an explicit Python package. The entry point imports `modules.panel_actions`, `modules.panel_home_assistant`, and `modules.panel_mqtt`; the modules are libraries, not standalone services.
+- `homelab-control/modules/homelab_control_lib.sh` — reusable remote-agent shell module for config access, status/history writes, and retained MQTT telemetry. It derives the agent root from its own location after moving under `modules/`.
+- `homelab-control/configs/` — owns the remote agent JSON config/example. Both Python entry points and the shell module resolve `configs/config.json` relative to the agent directory, so they do not depend on the current working directory.
 
 ## Configuration files
 
-- `homelab-panel/config.example.py` — all panel/MQTT/auth/Home Assistant/monitor/history/job options. Active `config.py` is local-only and ignored.
-- `homelab-panel/devices.example.py` — device capabilities, WoL retry, status topics, expected-state defaults, confirmation, dynamic command buttons, and the separate local Home Assistant device `name`. Active `devices.py` is local-only and ignored.
-- `homelab-control/config.example.json` — remote broker/client/topics/timing and strict command-to-script allow-list. Active `config.json` is local-only and ignored.
+- `homelab-panel/configs/config.example.py` — all panel/MQTT/auth/Home Assistant/monitor/history/job options. Active `config.py` is local-only and ignored.
+- `homelab-panel/configs/devices.example.py` — device capabilities, WoL retry, status topics, expected-state defaults, confirmation, dynamic command buttons, and the separate local Home Assistant device `name`; non-empty example confirmation strings use `$TITLE` by default so prompts follow the configured title. Active `devices.py` is local-only and ignored.
+- `homelab-control/configs/config.example.json` — remote broker/client/topics/timing and strict command-to-script allow-list. Active `config.json` is local-only and ignored.
 
 ## Repository hygiene / `.gitignore`
 
-- Active `homelab-panel/config.py`, `homelab-panel/devices.py`, and `homelab-control/config.json` remain ignored while their `*.example.*` templates remain tracked.
+- Active `homelab-panel/configs/config.py`, `homelab-panel/configs/devices.py`, and `homelab-control/configs/config.json` are ignored while the examples and package markers remain tracked.
 - Runtime `homelab-panel/state/`, `homelab-control/state/`, and `homelab-control/logs/` remain ignored.
 - `.venv/`, `__pycache__/`, `*.pyc`, `*.pyo`, and macOS `.DS_Store` are ignored.
 - `scripts/` is intentionally **not** ignored because the shared shutdown/reboot helpers are project source.
@@ -248,8 +307,8 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 ## Safety model
 
 - Web/session protection is global when enabled.
-- MQTT control executes only device/button IDs configured in `devices.py`.
-- Remote Homelab Control independently allow-lists command IDs in `config.json`; bundled power scripts resolve from `PROJECT_ROOT/scripts`, while custom direct filenames resolve from `PROJECT_ROOT`.
+- MQTT control executes only device/button IDs configured in `homelab-panel/configs/devices.py`.
+- Remote Homelab Control independently allow-lists command IDs in `homelab-control/configs/config.json`; bundled power scripts resolve from `PROJECT_ROOT/scripts`, while custom direct filenames resolve from `PROJECT_ROOT`.
 - Local panel power-script lookup rejects traversal/nested names, and the remote listener keeps strict direct-filename handling for its configured jobs.
 - Retained panel-control messages are never executed, including the explicit local target. HA button discovery sets command `retain=False`; remote forwarding still uses `MQTT_CONFIG["retain"]`, which must remain False.
 - Local HA commands reuse the webpage runner and its privilege/path checks; local buttons affect the panel host. Browser confirmation prompts do not transfer to HA.
@@ -340,6 +399,7 @@ Panel tests use real Flask/Jinja with example configuration, temporary runtime f
 | `test_local_script_path_guards_are_preserved()` | Checks traversal, absolute paths, symlink escapes, missing files, and non-executable files without running a command. |
 | `test_home_assistant_birth_republishes_discovery_and_cached_state()` | Checks restart recovery with discovery retention disabled, retained availability/state, and no callback pings. |
 | `test_birth_defaults_customization_and_disabled_subscription()` | Verifies old-config defaults, custom HA topic/payload, empty-topic opt-out and globally disabled discovery. |
+| `test_confirmation_title_placeholder_resolves_and_is_js_safe()` | Verifies `$TITLE` resolves from the configured device title, literal confirmations remain unchanged, and apostrophes are safely JSON-encoded in rendered JavaScript. |
 | `test_webpages_still_render()` | Exercises the real Flask/Jinja dashboard, history, diagnostics and login pages after the integration change. |
 
 ## `homelab_mqtt.py`

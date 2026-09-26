@@ -9,20 +9,25 @@ import hmac
 import uuid
 from datetime import datetime
 
-from flask import Flask, render_template, redirect, url_for, flash, request, session
-import paho.mqtt.client as mqtt
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(APP_DIR)
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-from config import (
+from flask import Flask, render_template, redirect, url_for, flash, request, session
+from configs.config import (
     WOL_BROADCAST,
     MQTT_CONFIG,
     PANEL_TOKEN,
     MQTT_ONLINE_TTL_SECONDS,
     PAGE_REFRESH_SECONDS,
 )
-from devices import REMOTE_DEVICES, LOCAL_SERVER
+from configs.devices import REMOTE_DEVICES, LOCAL_SERVER
 
 try:
-    from config import WEB_AUTH_CONFIG
+    from configs.config import WEB_AUTH_CONFIG
 except ImportError:
     WEB_AUTH_CONFIG = {
         "enabled": False,
@@ -33,14 +38,14 @@ except ImportError:
     }
 
 try:
-    from config import PANEL_HISTORY_MAX_ENTRIES
+    from configs.config import PANEL_HISTORY_MAX_ENTRIES
 except ImportError:
     PANEL_HISTORY_MAX_ENTRIES = 100
 
 PANEL_HISTORY_MAX_ENTRIES = max(1, int(PANEL_HISTORY_MAX_ENTRIES))
 
 try:
-    from config import HOME_ASSISTANT_CONFIG
+    from configs.config import HOME_ASSISTANT_CONFIG
 except ImportError:
     HOME_ASSISTANT_CONFIG = {
         "enabled": False,
@@ -54,24 +59,27 @@ except ImportError:
     }
 
 try:
-    from config import STATUS_MONITOR_INTERVAL_SECONDS
+    from configs.config import STATUS_MONITOR_INTERVAL_SECONDS
 except ImportError:
     STATUS_MONITOR_INTERVAL_SECONDS = 10
 
 try:
-    from config import PANEL_JOB_MAX_ENTRIES
+    from configs.config import PANEL_JOB_MAX_ENTRIES
 except ImportError:
     PANEL_JOB_MAX_ENTRIES = 100
 
 STATUS_MONITOR_INTERVAL_SECONDS = max(2, int(STATUS_MONITOR_INTERVAL_SECONDS))
 PANEL_JOB_MAX_ENTRIES = max(1, int(PANEL_JOB_MAX_ENTRIES))
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(APP_DIR)
 # The panel and agent shell helpers share the same one-shot Paho publisher.
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 from homelab_mqtt import publish_message
+
+# Keep the Flask entry point focused on web/state orchestration. Project-specific
+# implementations live under homelab-panel/modules while this entry point remains
+# directly executable from any working directory.
+from modules.panel_actions import PanelActionManager
+from modules.panel_home_assistant import HomeAssistantIntegration
+from modules.panel_mqtt import PanelMqttRuntime
 
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 PANEL_STATE_DIR = os.path.join(APP_DIR, "state")
@@ -88,23 +96,17 @@ app.config.update(
     SESSION_COOKIE_SECURE=bool(WEB_AUTH_CONFIG.get("session_cookie_secure", False)),
 )
 
-MQTT_STATE = {}
-MQTT_STATE_LOCK = threading.Lock()
+# MQTT_CONNECTED remains as a compatibility mirror for callers/tests that
+# previously inspected this module-level flag directly. PanelMqttRuntime owns
+# the broker client and mutable MQTT caches.
+MQTT_CONNECTED = False
 PANEL_ACTION_STATE = {}
 PANEL_ACTION_STATE_LOCK = threading.Lock()
 PANEL_HISTORY_LOCK = threading.Lock()
-MQTT_CLIENT = None
-MQTT_CONNECTED = False
-MQTT_SUBSCRIPTIONS = set()
-MQTT_CONNECTION_INFO = {"connected_at": "", "disconnected_at": "", "disconnect_reason": ""}
 DEVICE_STATUS_CACHE = {}
 DEVICE_STATUS_CACHE_LOCK = threading.Lock()
 DEVICE_RUNTIME_LOCK = threading.Lock()
 PANEL_JOBS_LOCK = threading.Lock()
-WOL_JOBS = {}
-WOL_JOBS_LOCK = threading.Lock()
-POWER_CONFIRM_CANCEL = {}
-POWER_CONFIRM_LOCK = threading.Lock()
 BACKGROUND_MONITOR_STARTED = False
 BACKGROUND_MONITOR_LOCK = threading.Lock()
 REMOTE_JOB_EVENT_SEEN = set()
@@ -212,6 +214,11 @@ def get_device_button(device: dict, command: str) -> dict | None:
     return None
 
 
+def resolve_confirmation_text(configured_text, title: str) -> str:
+    """Resolve the optional $TITLE placeholder used by browser confirmations."""
+    return str(configured_text or "").replace("$TITLE", str(title or ""))
+
+
 def get_related_status_topic(status_cfg: dict, explicit_key: str, suffix: str) -> str:
     explicit = str(status_cfg.get(explicit_key, "")).strip()
     if explicit:
@@ -252,6 +259,79 @@ def get_device_category(device: dict, command: str) -> str:
     if command.startswith(("shutdown", "reboot")):
         return "power"
     return "command"
+
+
+def _sync_mqtt_connected(value: bool) -> None:
+    """Mirror PanelMqttRuntime connectivity for legacy module-level readers."""
+    global MQTT_CONNECTED
+    MQTT_CONNECTED = bool(value)
+
+
+def _device_status_cache_snapshot() -> dict:
+    """Return an isolated copy of cached device statuses for HA birth snapshots."""
+    with DEVICE_STATUS_CACHE_LOCK:
+        return {key: dict(value) for key, value in DEVICE_STATUS_CACHE.items()}
+
+
+ACTION_MANAGER = PanelActionManager(
+    remote_devices=lambda: REMOTE_DEVICES,
+    local_server=lambda: LOCAL_SERVER,
+    scripts_dir=lambda: SCRIPTS_DIR,
+    wol_broadcast=lambda: WOL_BROADCAST,
+    run_command=lambda *args, **kwargs: run_command(*args, **kwargs),
+    mqtt_publish=lambda *args, **kwargs: mqtt_publish(*args, **kwargs),
+    local_script_runner=lambda *args, **kwargs: run_local_script(*args, **kwargs),
+    ping_host=lambda *args, **kwargs: ping_host(*args, **kwargs),
+    get_device_button=lambda *args, **kwargs: get_device_button(*args, **kwargs),
+    update_panel_job=lambda *args, **kwargs: update_panel_job(*args, **kwargs),
+    record_device_event=lambda *args, **kwargs: record_device_event(*args, **kwargs),
+    set_expected_state=lambda *args, **kwargs: set_expected_state(*args, **kwargs),
+    device_mqtt_online=lambda *args, **kwargs: device_mqtt_online(*args, **kwargs),
+    device_mqtt_offline=lambda *args, **kwargs: device_mqtt_offline(*args, **kwargs),
+)
+
+HOME_ASSISTANT = HomeAssistantIntegration(
+    config=lambda: HOME_ASSISTANT_CONFIG,
+    mqtt_config=lambda: MQTT_CONFIG,
+    remote_devices=lambda: REMOTE_DEVICES,
+    local_server=lambda: LOCAL_SERVER,
+    is_mqtt_connected=lambda: get_mqtt_connected(),
+    publish_direct=lambda *args, **kwargs: publish_mqtt_direct(*args, **kwargs),
+    status_cache_snapshot=lambda: _device_status_cache_snapshot(),
+    combined_device_jobs=lambda *args, **kwargs: combined_device_jobs(*args, **kwargs),
+    wol_job_active=lambda *args, **kwargs: wol_job_active(*args, **kwargs),
+)
+
+MQTT_RUNTIME = PanelMqttRuntime(
+    mqtt_config=lambda: MQTT_CONFIG,
+    ha_config=lambda: HOME_ASSISTANT_CONFIG,
+    remote_devices=lambda: REMOTE_DEVICES,
+    publish_message=lambda *args, **kwargs: publish_message(*args, **kwargs),
+    home_assistant_enabled=lambda: home_assistant_enabled(),
+    publish_home_assistant_snapshot=lambda: publish_home_assistant_snapshot(),
+    record_device_event=lambda *args, **kwargs: record_device_event(*args, **kwargs),
+    process_panel_control_message=lambda: process_panel_control_message,
+    handle_device_power_transition=lambda *args, **kwargs: handle_device_power_transition(*args, **kwargs),
+    process_remote_jobs_message=lambda *args, **kwargs: process_remote_jobs_message(*args, **kwargs),
+    handle_boot_id_message=lambda *args, **kwargs: handle_boot_id_message(*args, **kwargs),
+    start_status_monitor=lambda: start_status_monitor(),
+    topic_helpers={
+        "hostname": lambda status_cfg: get_hostname_topic_for_status_cfg(status_cfg),
+        "uptime": lambda status_cfg: get_uptime_topic_for_status_cfg(status_cfg),
+        "history": lambda status_cfg: get_history_topic_for_status_cfg(status_cfg),
+        "jobs": lambda status_cfg: get_jobs_topic_for_status_cfg(status_cfg),
+        "boot_id": lambda status_cfg: get_boot_id_topic_for_status_cfg(status_cfg),
+        "boot_time": lambda status_cfg: get_boot_time_topic_for_status_cfg(status_cfg),
+    },
+    connected_changed=lambda value: _sync_mqtt_connected(value),
+)
+
+# Mutable aliases are retained for compatibility/diagnostics while ownership
+# lives in PanelMqttRuntime.
+MQTT_STATE = MQTT_RUNTIME.state
+MQTT_STATE_LOCK = MQTT_RUNTIME.state_lock
+MQTT_SUBSCRIPTIONS = MQTT_RUNTIME.subscriptions
+MQTT_CONNECTION_INFO = MQTT_RUNTIME.connection_info
 
 
 def load_runtime_state_unlocked() -> dict:
@@ -404,54 +484,27 @@ def combined_device_jobs(device_id: str, device: dict) -> list[dict]:
 
 
 def mqtt_publish(topic: str, payload: str) -> tuple[bool, str]:
-    # Keep command publishing separate from the reconnecting telemetry client:
-    # a failed command must not stay queued for a later broker reconnection.
-    return publish_message(
-        MQTT_CONFIG, topic, payload,
-        qos=int(MQTT_CONFIG["qos"]), retain=bool(MQTT_CONFIG["retain"]),
-    )
+    """Publish one remote command through the shared disposable MQTT publisher."""
+    return MQTT_RUNTIME.publish_command(topic, payload)
+
 
 
 def send_wol(mac: str) -> tuple[bool, str]:
-    cmd = [
-        "wakeonlan",
-        "-i", WOL_BROADCAST,
-        mac,
-    ]
-    return run_command(cmd)
+    """Compatibility delegate for one Wake-on-LAN send."""
+    return ACTION_MANAGER.send_wol(mac)
+
 
 
 def run_local_script(script_name: str) -> tuple[bool, str]:
-    # LOCAL_SERVER contains the shared Homelab Panel power helpers. They live in
-    # PROJECT_ROOT/scripts so the project root stays clean. Only a direct
-    # filename is accepted here; project-specific jobs belong to their own
-    # project and are handled by Homelab Control's command allow-list.
-    if os.path.basename(script_name) != script_name or script_name in {".", ".."}:
-        return False, f"Ugyldigt lokalt scriptnavn: {script_name}"
+    """Compatibility delegate for guarded local script execution."""
+    return ACTION_MANAGER.run_local_script(script_name)
 
-    script_path = os.path.realpath(os.path.join(SCRIPTS_DIR, script_name))
-    if os.path.dirname(script_path) != os.path.realpath(SCRIPTS_DIR):
-        return False, f"Lokalt script er uden for scripts-mappen: {script_name}"
-
-    if not os.path.isfile(script_path):
-        return False, f"Script findes ikke: {script_path}"
-
-    if not os.access(script_path, os.X_OK):
-        return False, f"Script er ikke eksekverbart: {script_path}"
-
-    return run_command([script_path])
 
 
 def execute_local_action(command: str) -> tuple[bool, str]:
-    # Both web and MQTT select a configured button ID. Neither interface can
-    # supply a script path; run_local_script keeps the existing path checks.
-    button = next((b for b in LOCAL_SERVER.get("buttons", []) if b["id"] == command), None)
-    if not button:
-        return False, "Ukendt lokal handling."
-    ok, message = run_local_script(button["script"])
-    if ok:
-        return True, f"Kørte lokalt script: {button['script']} -> {message}"
-    return False, f"Lokalt script fejlede: {button['script']} -> {message}"
+    """Execute one configured local button through the action module."""
+    return ACTION_MANAGER.execute_local_action(command)
+
 
 
 def ping_host(ip: str) -> bool:
@@ -465,50 +518,35 @@ def ping_host(ip: str) -> bool:
 
 
 def set_mqtt_state(topic: str, payload: str, retain: bool = False, qos: int = 0) -> str | None:
-    with MQTT_STATE_LOCK:
-        previous = MQTT_STATE.get(topic)
-        MQTT_STATE[topic] = {
-            "payload": payload,
-            "timestamp": time.time(),
-            "received_at": datetime.now().isoformat(timespec="seconds"),
-            "retain": bool(retain),
-            "qos": int(qos),
-        }
-    if not previous:
-        return None
-    return str(previous.get("payload", ""))
+    """Store one received MQTT value in the runtime cache."""
+    return MQTT_RUNTIME.set_state(topic, payload, retain=retain, qos=qos)
+
 
 
 def set_mqtt_connected(value: bool, reason: str = "") -> None:
-    global MQTT_CONNECTED
-    MQTT_CONNECTED = value
-    now = datetime.now().isoformat(timespec="seconds")
-    if value:
-        MQTT_CONNECTION_INFO["connected_at"] = now
-        MQTT_CONNECTION_INFO["disconnect_reason"] = ""
-    else:
-        MQTT_CONNECTION_INFO["disconnected_at"] = now
-        MQTT_CONNECTION_INFO["disconnect_reason"] = reason
+    """Update MQTT runtime connectivity and the compatibility mirror."""
+    MQTT_RUNTIME.set_connected(value, reason)
+
 
 
 def get_mqtt_connected() -> bool:
-    return MQTT_CONNECTED
+    """Return broker connectivity, honoring direct legacy mirror updates."""
+    if MQTT_RUNTIME.connected != bool(MQTT_CONNECTED):
+        MQTT_RUNTIME.connected = bool(MQTT_CONNECTED)
+    return bool(MQTT_CONNECTED)
+
 
 
 def get_mqtt_state(topic: str) -> dict | None:
-    if not topic:
-        return None
-    with MQTT_STATE_LOCK:
-        return MQTT_STATE.get(topic)
+    """Return one cached MQTT topic record."""
+    return MQTT_RUNTIME.get_state(topic)
+
 
 
 def get_mqtt_payload_and_age(topic: str) -> tuple[str | None, int | None]:
-    state = get_mqtt_state(topic)
-    if not state:
-        return None, None
-    payload = state["payload"].strip()
-    age = int(time.time() - state["timestamp"])
-    return payload, age
+    """Return one cached MQTT payload and age."""
+    return MQTT_RUNTIME.get_payload_and_age(topic)
+
 
 
 def action_to_danish(payload: str | None) -> str:
@@ -932,366 +970,35 @@ def device_mqtt_offline(device: dict) -> bool:
 
 
 def wol_job_active(device_id: str) -> bool:
-    with WOL_JOBS_LOCK:
-        job = WOL_JOBS.get(device_id)
-        return bool(job and not job["cancel"].is_set() and job.get("active"))
+    """Return whether the action module has an active WoL job."""
+    return ACTION_MANAGER.wol_job_active(device_id)
 
 
-def finish_wol_job(device_id: str, job_id: str, status: str, message: str, severity: str = "info") -> None:
-    now = datetime.now().isoformat(timespec="seconds")
-    if status == "success":
-        set_expected_state(device_id, "online", "Wake-on-LAN confirmed")
-    elif status in {"failure", "cancelled"}:
-        set_expected_state(device_id, "unknown", "Wake-on-LAN did not complete")
-    update_panel_job(
-        device_id,
-        job_id,
-        status=status,
-        updated_at=now,
-        finished_at=now,
-        message=message,
-    )
-    record_device_event(
-        device_id,
-        category="power",
-        event_type="wol_result",
-        command="power_on",
-        result=status,
-        message=message,
-        severity=severity,
-        job_id=job_id,
-        job_status=status,
-    )
-    with WOL_JOBS_LOCK:
-        current = WOL_JOBS.get(device_id)
-        if current and current.get("job_id") == job_id:
-            current["active"] = False
 
 
-def wol_worker(device_id: str, job_id: str, source: str) -> None:
-    device = REMOTE_DEVICES[device_id]
-    wol_cfg = device.get("wol", {})
-    retry_cfg = wol_cfg.get("retry", {}) or {}
-    retry_enabled = bool(retry_cfg.get("enabled", False))
-    interval = max(1, int(retry_cfg.get("interval_seconds", 15)))
-    max_attempts = max(1, int(retry_cfg.get("max_attempts", 20))) if retry_enabled else 1
-    wait_for_mqtt = max(0, int(retry_cfg.get("wait_for_mqtt_seconds", 120)))
-    mac = str(wol_cfg.get("mac", "")).strip()
-    ip = str(wol_cfg.get("ip", "")).strip()
-
-    with WOL_JOBS_LOCK:
-        cancel_event = WOL_JOBS[device_id]["cancel"]
-
-    started_epoch = time.time()
-    now = datetime.now().isoformat(timespec="seconds")
-    update_panel_job(
-        device_id,
-        job_id,
-        command="power_on",
-        label=str(wol_cfg.get("label") or "Wake-on-LAN"),
-        category="power",
-        source=source,
-        status="running",
-        queued_at=now,
-        started_at=now,
-        updated_at=now,
-        message="Wake-on-LAN started",
-        runtime_seconds=0.0,
-    )
-    set_expected_state(device_id, "starting", "Wake-on-LAN requested")
-
-    ping_seen = False
-    last_error = ""
-    for attempt in range(1, max_attempts + 1):
-        if cancel_event.is_set():
-            finish_wol_job(device_id, job_id, "cancelled", "Wake-on-LAN retry cancelled by user")
-            return
-
-        ok, message = send_wol(mac)
-        last_error = "" if ok else message
-        record_device_event(
-            device_id,
-            category="power",
-            event_type="wol_attempt",
-            command="power_on",
-            result="sent" if ok else "failure",
-            message=f"WoL attempt {attempt}/{max_attempts}: {message}",
-            source=source,
-            severity="info" if ok else "error",
-            job_id=job_id,
-            job_status="running",
-            attempt=attempt,
-        )
-        update_panel_job(
-            device_id,
-            job_id,
-            status="waiting",
-            updated_at=datetime.now().isoformat(timespec="seconds"),
-            message=f"WoL attempt {attempt}/{max_attempts} sent; waiting for ping",
-            attempts=attempt,
-            runtime_seconds=round(time.time() - started_epoch, 1),
-        )
-
-        deadline = time.time() + interval
-        while time.time() < deadline:
-            if cancel_event.is_set():
-                finish_wol_job(device_id, job_id, "cancelled", "Wake-on-LAN retry cancelled by user")
-                return
-            if ip and ping_host(ip):
-                ping_seen = True
-                break
-            time.sleep(1)
-        if ping_seen:
-            break
-
-    if not ping_seen:
-        message = f"Wake-on-LAN did not produce a ping response after {max_attempts} attempt(s)"
-        if last_error:
-            message += f"; last send error: {last_error}"
-        finish_wol_job(device_id, job_id, "failure", message, "error")
-        return
-
-    record_device_event(
-        device_id,
-        category="availability",
-        event_type="wol_ping_confirmed",
-        command="power_on",
-        result="running",
-        message="Ping response confirmed after Wake-on-LAN",
-        source=source,
-        job_id=job_id,
-        job_status="confirming",
-    )
-
-    status_cfg = device.get("status", {})
-    if not str(status_cfg.get("power_topic", "")).strip():
-        finish_wol_job(device_id, job_id, "success", "Ping confirmed; MQTT power status is not configured")
-        return
-
-    update_panel_job(
-        device_id,
-        job_id,
-        status="confirming",
-        updated_at=datetime.now().isoformat(timespec="seconds"),
-        message="Ping confirmed; waiting for MQTT online",
-    )
-    deadline = time.time() + wait_for_mqtt
-    while time.time() <= deadline:
-        if cancel_event.is_set():
-            finish_wol_job(device_id, job_id, "cancelled", "Wake-on-LAN confirmation cancelled by user")
-            return
-        if device_mqtt_online(device):
-            finish_wol_job(device_id, job_id, "success", "Device online confirmed by both ping and MQTT")
-            return
-        time.sleep(1)
-
-    finish_wol_job(
-        device_id,
-        job_id,
-        "failure",
-        "Ping is online, but MQTT did not confirm online before the timeout",
-        "error",
-    )
 
 
-def start_wol_job(device_id: str, source: str) -> tuple[bool, str]:
-    device = REMOTE_DEVICES.get(device_id)
-    if not device:
-        return False, f"Ukendt remote enhed: {device_id}"
-    wol_cfg = device.get("wol", {})
-    if not wol_cfg.get("enabled"):
-        return False, f"Wake-on-LAN er ikke aktiveret for {device['title']}"
-    if not str(wol_cfg.get("mac", "")).strip():
-        return False, f"Wake-on-LAN MAC mangler for {device['title']}"
-    if wol_job_active(device_id):
-        return False, f"Wake-on-LAN kører allerede for {device['title']}"
-
-    job_id = f"wol-{uuid.uuid4().hex[:10]}"
-    cancel_event = threading.Event()
-    with WOL_JOBS_LOCK:
-        WOL_JOBS[device_id] = {"job_id": job_id, "cancel": cancel_event, "active": True}
-
-    threading.Thread(target=wol_worker, args=(device_id, job_id, source), daemon=True).start()
-    return True, f"Wake-on-LAN job startet for {device['title']} (job {job_id})"
 
 
-def cancel_wol_job(device_id: str, source: str) -> tuple[bool, str]:
-    with WOL_JOBS_LOCK:
-        job = WOL_JOBS.get(device_id)
-        if not job or not job.get("active"):
-            return False, "Der er ingen aktiv Wake-on-LAN retry at annullere"
-        job["cancel"].set()
-        job["active"] = False
-        job_id = str(job.get("job_id", ""))
-    record_device_event(
-        device_id,
-        category="power",
-        event_type="wol_cancel_requested",
-        command="cancel_wol",
-        result="sent",
-        message="Wake-on-LAN cancel requested",
-        source=source,
-        job_id=job_id,
-    )
-    return True, "Wake-on-LAN retry annulleres"
+
 
 
 def cancel_power_confirmation(device_id: str) -> None:
-    with POWER_CONFIRM_LOCK:
-        event = POWER_CONFIRM_CANCEL.get(device_id)
-        if event:
-            event.set()
+    """Cancel an outstanding shutdown/reboot confirmation worker."""
+    ACTION_MANAGER.cancel_power_confirmation(device_id)
+
 
 
 def power_confirmation_worker(device_id: str, command: str, job_id: str, confirmation: str) -> None:
-    device = REMOTE_DEVICES[device_id]
-    confirm_cfg = device.get("confirmation", {}) or {}
-    if confirmation == "shutdown":
-        timeout = max(10, int(confirm_cfg.get("shutdown_timeout_seconds", 180)))
-    else:
-        timeout = max(10, int(confirm_cfg.get("reboot_timeout_seconds", 300)))
+    """Delegate shutdown/reboot confirmation to the action module."""
+    ACTION_MANAGER.power_confirmation_worker(device_id, command, job_id, confirmation)
 
-    cancel_event = threading.Event()
-    with POWER_CONFIRM_LOCK:
-        previous = POWER_CONFIRM_CANCEL.get(device_id)
-        if previous:
-            previous.set()
-        POWER_CONFIRM_CANCEL[device_id] = cancel_event
-
-    now = datetime.now().isoformat(timespec="seconds")
-    update_panel_job(
-        device_id,
-        job_id,
-        status="confirming",
-        updated_at=now,
-        message=f"Waiting to confirm {confirmation}",
-    )
-
-    ip = str(device.get("wol", {}).get("ip", "")).strip()
-    deadline = time.time() + timeout
-    saw_offline = False
-
-    while time.time() <= deadline and not cancel_event.is_set():
-        ping_ok = ping_host(ip) if ip else False
-        mqtt_offline = device_mqtt_offline(device)
-        mqtt_online = device_mqtt_online(device)
-
-        if not ping_ok and mqtt_offline:
-            if confirmation == "shutdown":
-                set_expected_state(device_id, "offline", "Shutdown confirmed")
-                update_panel_job(
-                    device_id,
-                    job_id,
-                    status="success",
-                    finished_at=datetime.now().isoformat(timespec="seconds"),
-                    updated_at=datetime.now().isoformat(timespec="seconds"),
-                    message="Shutdown confirmed: ping offline and MQTT offline",
-                )
-                record_device_event(
-                    device_id,
-                    category="power",
-                    event_type="shutdown_confirmed",
-                    command=command,
-                    result="success",
-                    message="Shutdown confirmed by both ping offline and MQTT offline",
-                    job_id=job_id,
-                    job_status="success",
-                )
-                return
-            saw_offline = True
-            set_expected_state(device_id, "restarting", "Reboot offline phase confirmed")
-
-        if confirmation == "reboot" and saw_offline and ping_ok and mqtt_online:
-            set_expected_state(device_id, "online", "Reboot confirmed")
-            update_panel_job(
-                device_id,
-                job_id,
-                status="success",
-                finished_at=datetime.now().isoformat(timespec="seconds"),
-                updated_at=datetime.now().isoformat(timespec="seconds"),
-                message="Reboot confirmed: device went offline and returned with ping + MQTT",
-            )
-            record_device_event(
-                device_id,
-                category="power",
-                event_type="reboot_confirmed",
-                command=command,
-                result="success",
-                message="Reboot confirmed: offline transition followed by ping + MQTT online",
-                job_id=job_id,
-                job_status="success",
-            )
-            return
-        time.sleep(2)
-
-    if cancel_event.is_set():
-        return
-    update_panel_job(
-        device_id,
-        job_id,
-        status="failure",
-        finished_at=datetime.now().isoformat(timespec="seconds"),
-        updated_at=datetime.now().isoformat(timespec="seconds"),
-        message=f"Timed out waiting to confirm {confirmation}",
-    )
-    record_device_event(
-        device_id,
-        category="power",
-        event_type=f"{confirmation}_confirmation_timeout",
-        command=command,
-        result="failure",
-        message=f"Timed out waiting for {confirmation} confirmation",
-        severity="error",
-        job_id=job_id,
-        job_status="failure",
-    )
 
 
 def execute_remote_action(device_id: str, command: str, job_id: str = "", source: str = "Homelab Panel") -> tuple[bool, str]:
-    device = REMOTE_DEVICES.get(device_id)
-    if not device:
-        return False, f"Ukendt remote enhed: {device_id}"
+    """Execute one configured remote action through the action module."""
+    return ACTION_MANAGER.execute_remote_action(device_id, command, job_id=job_id, source=source)
 
-    if command == "power_on":
-        return start_wol_job(device_id, source)
-    if command == "cancel_wol":
-        return cancel_wol_job(device_id, source)
-
-    command_aliases = {
-        "shutdown": "shutdown_delay",
-        "reboot": "reboot_delay",
-    }
-    resolved_command = command_aliases.get(command, command)
-
-    mqtt_cfg = device.get("mqtt_controls")
-    if not mqtt_cfg:
-        return False, f"Der er ingen MQTT-kontrol for {device['title']}"
-
-    button = get_device_button(device, resolved_command)
-    if not button:
-        return False, f"Ukendt handling '{command}' for {device['title']}"
-
-    topic = str(mqtt_cfg.get("topic", "")).strip()
-    payload = str(button.get("payload", "")).strip()
-    if not topic or not payload:
-        return False, f"Ufuldstændig MQTT-konfiguration for handling '{command}'"
-
-    # 0.0.9 remote agents accept both legacy plain-text payloads and an optional
-    # JSON job envelope. Legacy active devices.py files therefore keep working,
-    # while json_jobs=True enables exact panel<->agent job ID correlation.
-    if bool(mqtt_cfg.get("json_jobs", False)):
-        wire_payload = json.dumps(
-            {"command": payload, "job_id": job_id, "source": source},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    else:
-        wire_payload = payload
-
-    ok, message = mqtt_publish(topic, wire_payload)
-    if ok:
-        return True, f"MQTT command '{payload}' sendt til '{topic}'"
-    return False, message
 
 
 def execute_and_record_remote_action(
@@ -1567,203 +1274,39 @@ def format_duration(seconds) -> str:
 
 
 def publish_mqtt_direct(topic: str, payload: str, qos: int = 1, retain: bool = True) -> bool:
-    client = MQTT_CLIENT
-    if client is None or not get_mqtt_connected() or not topic:
-        return False
-    try:
-        info = client.publish(topic, payload=payload, qos=qos, retain=retain)
-        return getattr(info, "rc", mqtt.MQTT_ERR_SUCCESS) == mqtt.MQTT_ERR_SUCCESS
-    except Exception as exc:
-        print(f"MQTT direct publish failed for {topic}: {exc}", flush=True)
-        return False
+    """Publish telemetry/discovery through the connected MQTT runtime client."""
+    return MQTT_RUNTIME.publish_direct(topic, payload, qos=qos, retain=retain)
+
 
 
 def home_assistant_enabled() -> bool:
-    return bool(HOME_ASSISTANT_CONFIG.get("enabled", False))
+    """Return whether the Home Assistant integration is enabled."""
+    return HOME_ASSISTANT.enabled()
 
 
-def ha_state_topic(device_id: str) -> str:
-    prefix = str(HOME_ASSISTANT_CONFIG.get("state_prefix", "homelab-panel/ha")).strip().rstrip("/")
-    return f"{prefix}/{device_id}/state"
 
 
-def ha_device_block(device_id: str, device: dict) -> dict:
-    return {
-        "identifiers": [f"homelab_panel_{device_id}"],
-        "name": str(device.get("title") or device_id),
-        "manufacturer": "Homelab Panel",
-        "model": "Homelab Control Device",
-    }
 
 
-def publish_home_assistant_button(
-    node_id: str, button_id: str, label: str, command_payload: dict, device: dict,
-) -> None:
-    if not home_assistant_enabled() or not get_mqtt_connected():
-        return
-    control_topic = str(MQTT_CONFIG.get("panel_control_topic", "")).strip()
-    if not control_topic or not button_id:
-        return
-    discovery_prefix = str(HOME_ASSISTANT_CONFIG.get("discovery_prefix", "homeassistant")).strip().rstrip("/")
-    config = {
-        "name": label,
-        "unique_id": f"{node_id}_{button_id}",
-        "command_topic": control_topic,
-        "payload_press": json.dumps(command_payload, ensure_ascii=False, separators=(",", ":")),
-        # Retain discovery configuration, never the button's power command.
-        "retain": False,
-        "availability_topic": str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip(),
-        "device": device,
-    }
-    topic = f"{discovery_prefix}/button/{node_id}/{button_id}/config"
-    publish_mqtt_direct(
-        topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")),
-        qos=int(HOME_ASSISTANT_CONFIG.get("qos", 1)),
-        retain=bool(HOME_ASSISTANT_CONFIG.get("retain", True)),
-    )
+
 
 
 def publish_home_assistant_discovery() -> None:
-    if not home_assistant_enabled() or not get_mqtt_connected():
-        return
-    discovery_prefix = str(HOME_ASSISTANT_CONFIG.get("discovery_prefix", "homeassistant")).strip().rstrip("/")
-    availability_topic = str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip()
-    qos = int(HOME_ASSISTANT_CONFIG.get("qos", 1))
-    retain = bool(HOME_ASSISTANT_CONFIG.get("retain", True))
+    """Publish Home Assistant MQTT discovery via the integration module."""
+    HOME_ASSISTANT.publish_discovery()
 
-    for device_id, device in REMOTE_DEVICES.items():
-        state_topic = ha_state_topic(device_id)
-        dev = ha_device_block(device_id, device)
-        base = {
-            "state_topic": state_topic,
-            "availability_topic": availability_topic,
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "device": dev,
-        }
-        entities = [
-            ("binary_sensor", "online", {
-                **base,
-                "name": "Online",
-                "unique_id": f"homelab_panel_{device_id}_online",
-                "value_template": "{{ 'ON' if value_json.online else 'OFF' }}",
-                "payload_on": "ON",
-                "payload_off": "OFF",
-                "device_class": "connectivity",
-            }),
-            ("binary_sensor", "ping", {
-                **base,
-                "name": "Ping",
-                "unique_id": f"homelab_panel_{device_id}_ping",
-                "value_template": "{{ 'ON' if value_json.ping else 'OFF' }}",
-                "payload_on": "ON",
-                "payload_off": "OFF",
-                "device_class": "connectivity",
-            }),
-            ("sensor", "uptime", {
-                **base,
-                "name": "Uptime",
-                "unique_id": f"homelab_panel_{device_id}_uptime",
-                "value_template": "{{ value_json.uptime | int(0) }}",
-                "unit_of_measurement": "s",
-                "device_class": "duration",
-            }),
-            ("sensor", "last_command", {
-                **base,
-                "name": "Last command",
-                "unique_id": f"homelab_panel_{device_id}_last_command",
-                "value_template": "{{ value_json.last_command }}",
-            }),
-            ("sensor", "job_status", {
-                **base,
-                "name": "Job status",
-                "unique_id": f"homelab_panel_{device_id}_job_status",
-                "value_template": "{{ value_json.job_status }}",
-            }),
-        ]
-        for component, object_id, config in entities:
-            topic = f"{discovery_prefix}/{component}/homelab_panel_{device_id}/{object_id}/config"
-            publish_mqtt_direct(topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")), qos=qos, retain=retain)
-
-        node_id = f"homelab_panel_{device_id}"
-        wol_cfg = device.get("wol", {})
-        if wol_cfg.get("enabled"):
-            publish_home_assistant_button(
-                node_id, "wake", str(wol_cfg.get("label") or "Wake"),
-                {"device_id": device_id, "command": "power_on"}, dev,
-            )
-            publish_home_assistant_button(
-                node_id, "cancel_wol", "Annullér Wake-on-LAN",
-                {"device_id": device_id, "command": "cancel_wol"}, dev,
-            )
-
-        mqtt_cfg = device.get("mqtt_controls") or {}
-        for button in mqtt_cfg.get("buttons", []):
-            command_id = str(button.get("id", "")).strip()
-            publish_home_assistant_button(
-                node_id, command_id, str(button.get("label") or command_id),
-                {"device_id": device_id, "command": command_id}, dev,
-            )
-
-    # A separate namespace prevents a remote device named "local" from sharing
-    # IDs or discovery topics with the host running this panel.
-    local_device = {
-        "identifiers": ["homelab_local_panel"],
-        # Keep the webpage section title separate from the Home Assistant device
-        # name. Old devices.py files without ``name`` keep their previous title.
-        "name": str(LOCAL_SERVER.get("name") or LOCAL_SERVER.get("title") or "Homelab Panel"),
-        "manufacturer": "Homelab Panel",
-        "model": "Local Panel Controls",
-    }
-    for button in LOCAL_SERVER.get("buttons", []):
-        command_id = str(button.get("id", "")).strip()
-        publish_home_assistant_button(
-            "homelab_local_panel", command_id, str(button.get("label") or command_id),
-            {"target": "local", "command": command_id}, local_device,
-        )
 
 
 def publish_home_assistant_snapshot() -> None:
-    # HA can restart after the panel, including when retained discovery is off.
-    # Reuse cached status here so its MQTT birth callback does not run pings.
-    if not home_assistant_enabled() or not get_mqtt_connected():
-        return
-    availability_topic = str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip()
-    publish_mqtt_direct(availability_topic, "online", qos=int(HOME_ASSISTANT_CONFIG.get("qos", 1)), retain=True)
-    publish_home_assistant_discovery()
-    with DEVICE_STATUS_CACHE_LOCK:
-        statuses = {key: dict(value) for key, value in DEVICE_STATUS_CACHE.items()}
-    for device_id, device in REMOTE_DEVICES.items():
-        if device_id in statuses:
-            publish_home_assistant_state(device_id, device, statuses[device_id])
+    """Republish HA availability/discovery and cached device states."""
+    HOME_ASSISTANT.publish_snapshot()
+
 
 
 def publish_home_assistant_state(device_id: str, device: dict, status: dict) -> None:
-    if not home_assistant_enabled():
-        return
-    jobs = combined_device_jobs(device_id, device)
-    latest_job = jobs[0] if jobs else {}
-    payload = {
-        "online": status.get("overall") == "online",
-        "overall": status.get("overall", "offline"),
-        "ping": bool(status.get("ping_ok")),
-        "mqtt_online": bool(status.get("mqtt_online_ok")),
-        "hostname": status.get("hostname", ""),
-        "uptime": status.get("uptime_seconds", 0),
-        "last_command": status.get("last_command", "Ingen"),
-        "last_result": status.get("last_result", "Ingen"),
-        "last_message": status.get("last_message", ""),
-        "expected_state": status.get("expected_state", "unknown"),
-        "job_status": str(latest_job.get("status") or "idle"),
-        "job_command": str(latest_job.get("command") or ""),
-        "wol_active": wol_job_active(device_id),
-    }
-    publish_mqtt_direct(
-        ha_state_topic(device_id),
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-        qos=int(HOME_ASSISTANT_CONFIG.get("qos", 1)),
-        retain=True,
-    )
+    """Publish one Home Assistant device state via the integration module."""
+    HOME_ASSISTANT.publish_state(device_id, device, status)
+
 
 
 def monitor_device_transition(device_id: str, device: dict, status: dict) -> None:
@@ -1846,214 +1389,39 @@ def start_status_monitor() -> None:
 
 
 def build_mqtt_diagnostics() -> dict:
-    now_epoch = time.time()
-    with MQTT_STATE_LOCK:
-        states = {topic: dict(value) for topic, value in MQTT_STATE.items()}
-    topic_rows = []
-    for topic in sorted(MQTT_SUBSCRIPTIONS):
-        state = states.get(topic, {})
-        age = None
-        if state.get("timestamp"):
-            age = max(0, int(now_epoch - float(state["timestamp"])))
-        topic_rows.append({
-            "topic": topic,
-            "payload": state.get("payload", ""),
-            "received_at": state.get("received_at", ""),
-            "age": age,
-            "retain": state.get("retain"),
-            "qos": state.get("qos"),
-        })
-    devices = {}
-    for device_id, device in REMOTE_DEVICES.items():
-        status_cfg = device.get("status", {})
-        expected = []
-        for key in (
-            "power_topic", "action_topic",
-            "last_command_topic", "last_result_topic", "last_message_topic", "last_updated_topic",
-        ):
-            topic = str(status_cfg.get(key, "")).strip()
-            if topic:
-                expected.append((key, topic))
-        for key, topic in (
-            ("hostname_topic", get_hostname_topic_for_status_cfg(status_cfg)),
-            ("uptime_topic", get_uptime_topic_for_status_cfg(status_cfg)),
-            ("history_topic", get_history_topic_for_status_cfg(status_cfg)),
-            ("jobs_topic", get_jobs_topic_for_status_cfg(status_cfg)),
-            ("boot_id_topic", get_boot_id_topic_for_status_cfg(status_cfg)),
-            ("boot_time_topic", get_boot_time_topic_for_status_cfg(status_cfg)),
-        ):
-            if topic:
-                expected.append((key, topic))
-        rows = []
-        for key, topic in expected:
-            state = states.get(topic, {})
-            age = None
-            if state.get("timestamp"):
-                age = max(0, int(now_epoch - float(state["timestamp"])))
-            rows.append({"key": key, "topic": topic, "seen": bool(state), "payload": state.get("payload", ""), "age": age})
-        devices[device_id] = rows
-    return {
-        "connected": get_mqtt_connected(),
-        "client_id": str(MQTT_CONFIG.get("client_id_panel_status", "")),
-        "host": str(MQTT_CONFIG.get("host", "")),
-        "port": MQTT_CONFIG.get("port", 1883),
-        "control_topic": str(MQTT_CONFIG.get("panel_control_topic", "")),
-        "connection": dict(MQTT_CONNECTION_INFO),
-        "topics": topic_rows,
-        "devices": devices,
-    }
+    """Build MQTT diagnostics from the runtime module."""
+    return MQTT_RUNTIME.build_diagnostics()
+
 
 
 def on_connect_compat(*args):
-    client = args[0]
-    had_previous_connection = bool(MQTT_CONNECTION_INFO.get("connected_at"))
-    set_mqtt_connected(True)
+    """Compatibility callback delegating broker connect handling to the MQTT module."""
+    return MQTT_RUNTIME.on_connect(*args)
 
-    print("Homelab-panel MQTT connected", flush=True)
-
-    topics = set()
-    for device in REMOTE_DEVICES.values():
-        status_cfg = device.get("status", {})
-        for key in (
-            "power_topic", "action_topic",
-            "last_command_topic", "last_result_topic", "last_message_topic", "last_updated_topic",
-        ):
-            topic = str(status_cfg.get(key, "")).strip()
-            if topic:
-                topics.add(topic)
-        for topic in (
-            get_hostname_topic_for_status_cfg(status_cfg),
-            get_uptime_topic_for_status_cfg(status_cfg),
-            get_history_topic_for_status_cfg(status_cfg),
-            get_jobs_topic_for_status_cfg(status_cfg),
-            get_boot_id_topic_for_status_cfg(status_cfg),
-            get_boot_time_topic_for_status_cfg(status_cfg),
-        ):
-            if topic:
-                topics.add(topic)
-
-    panel_control_topic = str(MQTT_CONFIG.get("panel_control_topic", "")).strip()
-    if panel_control_topic:
-        topics.add(panel_control_topic)
-
-    if home_assistant_enabled():
-        status_topic = str(HOME_ASSISTANT_CONFIG.get("status_topic", "homeassistant/status")).strip()
-        if status_topic:
-            topics.add(status_topic)
-
-    MQTT_SUBSCRIPTIONS.clear()
-    MQTT_SUBSCRIPTIONS.update(topics)
-    for topic in sorted(topics):
-        client.subscribe(topic, qos=1)
-        print(f"Homelab-panel subscribed to {topic}", flush=True)
-
-    publish_home_assistant_snapshot()
-
-    event_type = "mqtt_reconnect" if had_previous_connection else "mqtt_connect"
-    for device_id, device in REMOTE_DEVICES.items():
-        if str(device.get("status", {}).get("power_topic", "")).strip():
-            record_device_event(
-                device_id,
-                category="mqtt",
-                event_type=event_type,
-                result="success",
-                message="Homelab Panel connected to MQTT broker",
-                source="Homelab Panel",
-            )
 
 
 def on_disconnect_compat(*args):
-    reason = ""
-    if len(args) >= 4:
-        reason = str(args[3])
-    elif len(args) >= 3:
-        reason = str(args[2])
-    set_mqtt_connected(False, reason)
-    print(f"Homelab-panel MQTT disconnected: {reason}", flush=True)
-    for device_id, device in REMOTE_DEVICES.items():
-        if str(device.get("status", {}).get("power_topic", "")).strip():
-            record_device_event(
-                device_id,
-                category="mqtt",
-                event_type="mqtt_disconnect",
-                result="failure",
-                message=f"Homelab Panel disconnected from MQTT broker{': ' + reason if reason else ''}",
-                source="Homelab Panel",
-                severity="error",
-            )
+    """Compatibility callback delegating disconnect handling to the MQTT module."""
+    return MQTT_RUNTIME.on_disconnect(*args)
+
 
 
 def on_message_compat(client, userdata, msg):
-    payload = msg.payload.decode("utf-8", errors="replace").strip()
-    panel_control_topic = str(MQTT_CONFIG.get("panel_control_topic", "")).strip()
-    previous_payload = set_mqtt_state(
-        msg.topic,
-        payload,
-        retain=bool(getattr(msg, "retain", False)),
-        qos=int(getattr(msg, "qos", 0)),
-    )
+    """Compatibility callback delegating incoming messages to the MQTT module."""
+    return MQTT_RUNTIME.on_message(client, userdata, msg)
 
-    if panel_control_topic and msg.topic == panel_control_topic:
-        if getattr(msg, "retain", False):
-            print("Homelab-panel control rejected: retained control messages are not executed", flush=True)
-            return
-        threading.Thread(target=process_panel_control_message, args=(payload,), daemon=True).start()
-        return
-
-    if home_assistant_enabled() and msg.topic == str(HOME_ASSISTANT_CONFIG.get("status_topic", "homeassistant/status")).strip():
-        if payload == str(HOME_ASSISTANT_CONFIG.get("status_online_payload", "online")):
-            publish_home_assistant_snapshot()
-        return
-
-    handle_device_power_transition(msg.topic, previous_payload, payload)
-    process_remote_jobs_message(msg.topic, payload)
-    handle_boot_id_message(msg.topic, payload)
-    print(f"Homelab-panel MQTT message: {msg.topic} = {payload}", flush=True)
 
 
 def build_mqtt_client():
-    try:
-        client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=MQTT_CONFIG["client_id_panel_status"],
-            protocol=mqtt.MQTTv311,
-        )
-    except AttributeError:
-        client = mqtt.Client(
-            client_id=MQTT_CONFIG["client_id_panel_status"],
-            protocol=mqtt.MQTTv311,
-        )
+    """Build the reconnecting MQTT client through the runtime module."""
+    return MQTT_RUNTIME.build_client()
 
-    client.reconnect_delay_set(min_delay=1, max_delay=30)
-    if home_assistant_enabled():
-        availability_topic = str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip()
-        if availability_topic:
-            client.will_set(availability_topic, payload="offline", qos=int(HOME_ASSISTANT_CONFIG.get("qos", 1)), retain=True)
-    return client
 
 
 def start_mqtt_listener() -> None:
-    global MQTT_CLIENT
+    """Start the long-running MQTT runtime and status monitor."""
+    MQTT_RUNTIME.start()
 
-    start_status_monitor()
-    client = build_mqtt_client()
-
-    if MQTT_CONFIG["user"]:
-        client.username_pw_set(MQTT_CONFIG["user"], MQTT_CONFIG["pass"])
-
-    client.on_connect = on_connect_compat
-    client.on_disconnect = on_disconnect_compat
-    client.on_message = on_message_compat
-
-    try:
-        # Publish helpers used by on_connect need the client reference before the
-        # network thread can invoke callbacks.
-        MQTT_CLIENT = client
-        client.connect_async(MQTT_CONFIG["host"], MQTT_CONFIG["port"], keepalive=60)
-        client.loop_start()
-        print("Homelab-panel MQTT listener started; broker connection runs in background", flush=True)
-    except Exception as exc:
-        print(f"MQTT listener kunne ikke starte: {exc}", flush=True)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -2107,6 +1475,7 @@ def index():
         web_auth_enabled=web_auth_enabled(),
         logged_in_username=session.get("username", ""),
         home_assistant_enabled=home_assistant_enabled(),
+        resolve_confirmation_text=resolve_confirmation_text,
     )
 
 

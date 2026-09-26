@@ -24,9 +24,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def load_panel():
     """Load real Flask code with example configs and block startup I/O/threads."""
     modules = {}
-    for name, filename in (("config", "config.example.py"), ("devices", "devices.example.py")):
+    config_package = types.ModuleType("configs")
+    config_package.__path__ = []
+    modules["configs"] = config_package
+    for name, filename in (("configs.config", "config.example.py"), ("configs.devices", "devices.example.py")):
         module = types.ModuleType(name)
-        path = ROOT / "homelab-panel" / filename
+        path = ROOT / "homelab-panel" / "configs" / filename
         exec(compile(path.read_text(), str(path), "exec"), module.__dict__)
         modules[name] = module
     path = ROOT / "homelab-panel/app.py"
@@ -250,6 +253,22 @@ class HomeAssistantTests(unittest.TestCase):
         self.published.clear()
         self.panel.on_connect_compat(client, None, None, 0)
         self.assertEqual(self.published, [])
+
+    def test_confirmation_title_placeholder_resolves_and_is_js_safe(self):
+        """Browser confirms replace $TITLE while preserving literal strings and JS safety."""
+        self.assertEqual(
+            self.panel.resolve_confirmation_text("Sluk '$TITLE'?", "Zotac RI531"),
+            "Sluk 'Zotac RI531'?",
+        )
+        self.assertEqual(self.panel.resolve_confirmation_text("Kør Watchtower?", "Zotac RI531"), "Kør Watchtower?")
+        device = self.panel.REMOTE_DEVICES["aoostar_wtr"]
+        device["title"] = "O'Brien Node"
+        device["wol"]["confirm"] = "Tænd '$TITLE'?"
+        device["mqtt_controls"]["buttons"][0]["confirm"] = "Sluk '$TITLE'?"
+        with patch.object(self.panel, "ping_host", return_value=False):
+            html = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("$TITLE", html)
+        self.assertIn("O\\u0027Brien Node", html)
 
     def test_webpages_still_render(self):
         """Real Flask/Jinja render the unchanged pages with I/O controlled."""

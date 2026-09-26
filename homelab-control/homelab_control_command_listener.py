@@ -13,7 +13,7 @@ import paho.mqtt.client as mqtt
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")
 STATE_DIR = os.path.join(BASE_DIR, "state")
 JOBS_FILE = os.path.join(STATE_DIR, "jobs.json")
 

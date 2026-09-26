@@ -125,7 +125,8 @@
     <div class="wol-grid">
       {% for device_id, device in remote_devices.items() %}
         {% if device.wol and device.wol.enabled %}
-          <form method="post" action="{{ url_for('wol', device_id=device_id, token=token) }}" {% if device.wol.confirm %}onsubmit="return confirm('{{ device.wol.confirm }}');"{% endif %}>
+          {% set confirm_text = resolve_confirmation_text(device.wol.confirm, device.title) %}
+          <form method="post" action="{{ url_for('wol', device_id=device_id, token=token) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
             <button class="ok" type="submit">⚡ {{ device.wol.label }}</button>
           </form>
         {% endif %}
@@ -139,7 +140,8 @@
         <h2>🔌 {{ device.mqtt_controls.title }}</h2>
         <div class="grid">
           {% for button in device.mqtt_controls.buttons %}
-            <form method="post" action="{{ url_for('mqtt_button', device_id=device_id, button_id=button.id, token=token) }}" {% if button.confirm %}onsubmit="return confirm('{{ button.confirm }}');"{% endif %}>
+            {% set confirm_text = resolve_confirmation_text(button.confirm, device.title) %}
+            <form method="post" action="{{ url_for('mqtt_button', device_id=device_id, button_id=button.id, token=token) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
               <button class="{{ button.color|default('neutral') }}" type="submit">{{ button.icon|default('▶️') }} {{ button.label }}</button>
             </form>
           {% endfor %}
@@ -152,7 +154,8 @@
     <h2>🖥️ {{ local_server.title }}</h2>
     <div class="grid">
       {% for button in local_server.buttons %}
-        <form method="post" action="{{ url_for('local_button', button_id=button.id, token=token) }}" {% if button.confirm %}onsubmit="return confirm('{{ button.confirm }}');"{% endif %}>
+        {% set confirm_text = resolve_confirmation_text(button.confirm, local_server.title) %}
+        <form method="post" action="{{ url_for('local_button', button_id=button.id, token=token) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
           <button class="{{ button.color }}" type="submit">{{ button.icon }} {{ button.label }}</button>
         </form>
       {% endfor %}

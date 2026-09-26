@@ -24,6 +24,82 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.18 — 2026-09-26
+
+### Component-local config and module folders
+
+- Moved panel configuration examples from `homelab-panel/` into `homelab-panel/configs/`. Active panel configuration is now loaded from `homelab-panel/configs/config.py` and `homelab-panel/configs/devices.py`. Added `configs/__init__.py` so the directory is an explicit Python package.
+- Moved the three panel implementation modules into `homelab-panel/modules/`: `panel_actions.py`, `panel_home_assistant.py`, and `panel_mqtt.py`. Added `modules/__init__.py` and changed `app.py` to import the same classes through `modules.*`.
+- Moved the remote-agent JSON example to `homelab-control/configs/config.example.json`. Both remote Python entry points now load the active `homelab-control/configs/config.json` path relative to their own file, not the current working directory.
+- Moved the reusable remote shell library to `homelab-control/modules/homelab_control_lib.sh`. The library now derives the `homelab-control` root from its parent directory, preserving the existing `state/` and `logs/` locations while loading `configs/config.json`.
+- Updated `scripts/homelab_action_common.sh` to locate the remote shell module under `homelab-control/modules/` and the active remote config under `homelab-control/configs/`. Shared shutdown/reboot scripts otherwise retain their existing behavior.
+- `homelab_mqtt.py` remains at the project root because it is an independently executable shared one-shot publisher used by both the panel and remote shell helper; it is not a panel-specific module.
+
+### Independent execution and compatibility
+
+- `homelab-panel/app.py` now establishes the panel directory and project root from `__file__` before importing local packages. The panel can therefore still be launched directly by path from an unrelated working directory while resolving its own `configs/` and `modules/`.
+- `homelab_control_command_listener.py`, `homelab_control_status_indicator.py`, and the sourced shell module likewise resolve configuration relative to their component path rather than shell working directory. The entry points remain separate programs and do not require the other Homelab Panel processes to be running.
+- Configuration keys, MQTT topics/payloads, Home Assistant entity IDs, command allow-lists, browser routes, button labels/confirmations, power-script semantics, runtime state locations, and safety/path guards are unchanged. This release changes organization and path resolution, not the configured behavior.
+- Updated offline regression fixtures to load example panel configuration through the new `configs` package and to mirror the new remote `configs/`/`modules/` layout for the shell bridge test.
+- Updated `.gitignore` so only active files under the new `configs/` directories are ignored; tracked examples and package marker files remain included.
+
+### Documentation and verification
+
+- Updated README installation, configuration, module layout, command examples, MQTT CLI examples, and helper paths to the new directories.
+- Updated `commented_code_map.md` with the new module/config locations and why the package markers/path derivation exist.
+- Verified panel, both remote Python entry points, the remote shell module, and the shared action helper resolve their new paths from an unrelated working directory using isolated dependency stubs and temporary active configs.
+- Version advances exactly from 0.0.17 to 0.0.18.
+
+## 0.0.17 — 2026-09-26
+
+### `$TITLE` as the standard confirmation example
+
+- Standardized the supplied example configuration so every non-empty browser `confirm` value uses `$TITLE` instead of hard-coded device text. Wake, shutdown, reboot, custom Watchtower, and local shutdown/reboot examples now all demonstrate the same title-following pattern.
+- Updated README examples and wording to present `$TITLE` as the default/recommended confirmation style while retaining compatibility with literal confirmation strings and empty strings.
+- Clarified that local `$TITLE` resolves from `LOCAL_SERVER["title"]`; the separate local Home Assistant `name` remains unchanged and is not substituted into browser confirmations.
+- No runtime Python, template, MQTT, route, command, allow-list, or safety behavior changed in this release.
+- Updated the code map wording for the example configuration and refreshed validation/version metadata.
+- Version advances exactly from 0.0.16 to 0.0.17.
+
+## 0.0.16 — 2026-09-26
+
+### Device-title placeholders in browser confirmations
+
+- Added optional `$TITLE` expansion for browser confirmation text. Remote Wake-on-LAN and configured remote button confirmations resolve `$TITLE` from that entry's `REMOTE_DEVICES[device_id]["title"]`; local button confirmations can use the same token with `LOCAL_SERVER["title"]`.
+- Existing confirmation strings without `$TITLE` are unchanged, and empty confirmation strings still skip the browser prompt. The placeholder affects only displayed browser confirmation text; button labels, MQTT topics/payloads, Home Assistant names/IDs, and command allow-lists are unchanged.
+- Updated `devices.example.py` Wake-on-LAN, shutdown-delay, and reboot-delay examples to use `$TITLE`, so changing a remote device title no longer requires editing those confirmation messages separately.
+- Changed confirmation rendering in `templates/index.html` to JSON-safe JavaScript strings. This is required for examples such as `'$TITLE'`, because the resolved confirmation contains apostrophes; quoted/Unicode titles can no longer break the inline `confirm(...)` call.
+- Added `resolve_confirmation_text()` in `app.py` rather than creating another module; confirmation expansion is a small web-rendering responsibility and does not justify expanding the module count.
+- Added a regression test covering placeholder expansion, unchanged literal strings, and apostrophe-safe rendering. Updated README, code map, validation, and version metadata.
+- Version advances exactly from 0.0.15 to 0.0.16.
+
+## 0.0.15 — 2026-09-26
+
+### Focused panel modules
+
+- Refactored the 2,232-line `homelab-panel/app.py` into a smaller Flask/state orchestrator plus three focused modules. `app.py` is now about 1,594 lines; the extracted implementations are grouped by responsibility rather than split into many small files.
+- Added `homelab-panel/panel_actions.py` with `PanelActionManager` for guarded local scripts, Wake-on-LAN retry/cancel state, shutdown/reboot confirmation, and configured remote action dispatch.
+- Added `homelab-panel/panel_mqtt.py` with `PanelMqttRuntime` for the long-running/reconnecting Paho client, receive cache, subscriptions, connect/disconnect/message callbacks, diagnostics, direct telemetry publication, and delegation to the existing disposable one-shot publisher for commands.
+- Added `homelab-panel/panel_home_assistant.py` with `HomeAssistantIntegration` for MQTT Discovery, local/remote buttons, availability snapshots, and retained per-device state payloads.
+- Kept persistent panel history, panel/remote job merging, expected state, runtime files, status evaluation, monitor logic, authentication, and Flask routes together in `app.py`; these concerns share state closely and splitting them further would mainly add indirection.
+- Modules receive current configuration/state callbacks from `app.py`. This preserves dynamic `devices.py` configuration and avoids copying config or creating parallel state stores. Existing app-level delegate function names remain where useful for compatibility and regression tests.
+
+### Behavior and safety preservation
+
+- No configuration option, active-config filename, web route, MQTT topic/payload, Home Assistant entity ID, button label, service command, or bundled power-script behavior changed.
+- Preserved local script filename/containment/executable checks, remote command allow-lists, non-retained command behavior, retained panel-control rejection, WoL duplicate/cancel behavior, ping+MQTT confirmation rules, authentication/token gates, and the separate disposable command publisher.
+- Home Assistant discovery output was compared against the untouched 0.0.14 implementation for the example configuration: all 30 discovery publications matched topic, payload, QoS, and retain values.
+- Local configured-script dispatch, remote configured MQTT wire payloads, MQTT diagnostics fields, and formatting helpers were compared against 0.0.14 and matched for the exercised cases.
+
+### Documentation and verification
+
+- Updated the current-use README with the new module layout while leaving the supplied disclaimer sections in place.
+- Updated `commented_code_map.md` so the Flask delegates and every new manager/integration/runtime method explain both what they do and why the boundary exists.
+- Configuration examples are unchanged because this refactor adds no options; they continue to contain the complete available configuration surface.
+- All Python files compile and all six shell scripts pass `bash -n`. The Home Assistant/panel regression suite passes **12/12** under isolated Flask/Paho dependency stubs, covering discovery, control dispatch, path guards, retained-message rejection, HA birth handling, auth/token behavior, and web routes.
+- The real `paho-mqtt` and Flask packages are not installed in this sandbox, so the complete publisher/wire suite could not be rerun here. The panel-to-shared-publisher integration test passes under the isolated dependency environment; production broker, HA, device power, and Linux service operations remain untested.
+- Version advances exactly from 0.0.14 to 0.0.15.
+
 ## 0.0.14 — 2026-09-26
 
 ### Paho MQTT throughout the application

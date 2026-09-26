@@ -1,10 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd -- "${MODULE_DIR}/.." && pwd)"
 STATE_DIR="${BASE_DIR}/state"
 LOG_DIR="${BASE_DIR}/logs"
-CONFIG_FILE="${BASE_DIR}/config.json"
+CONFIG_FILE="${BASE_DIR}/configs/config.json"
 
 ACTION_FILE="${STATE_DIR}/action"
 LAST_COMMAND_FILE="${STATE_DIR}/last_command"

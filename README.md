@@ -2,16 +2,32 @@
 
 Homelab Panel monitors and controls homelab devices through a Flask webpage and MQTT. It supports Wake-on-LAN, configured remote jobs, local shutdown/reboot controls, device history, and optional automatic Home Assistant buttons.
 
-- `homelab-panel/`: webpage, ping/MQTT status, jobs, history, and Home Assistant discovery.
-- `homelab-control/`: optional agent on each remote Linux host; runs explicitly allowed scripts and publishes status/results.
+- `homelab-panel/`: webpage, ping/MQTT status, jobs, history, Home Assistant discovery, plus its own `configs/` and `modules/` directories.
+- `homelab-control/`: optional agent on each remote Linux host; keeps its JSON configuration in `configs/`, its reusable shell helper in `modules/`, runs explicitly allowed scripts, and publishes status/results.
 - `scripts/`: shared Linux shutdown/reboot scripts and their common helper.
-- `homelab_mqtt.py`: shared Paho publisher for panel commands and shell-helper telemetry.
+- `homelab_mqtt.py`: shared **one-shot** Paho publisher for panel commands and shell-helper telemetry.
 - `tests/`: regression checks for Home Assistant, command dispatch, and Paho publishing; protocol tests use localhost only.
+
+### Panel code layout
+
+The panel is intentionally split by responsibility without turning every helper into a separate module:
+
+| File | Responsibility |
+|---|---|
+| `homelab-panel/app.py` | Directly executable Flask entry point; routes/authentication plus shared panel persistence, history, jobs, expected-state/status evaluation, monitor orchestration, and thin delegates into `modules/` |
+| `homelab-panel/configs/` | Active `config.py`/`devices.py` live here beside their tracked examples; `app.py` resolves this directory from its own location, not the shell working directory |
+| `homelab-panel/modules/` | Panel-specific reusable Python implementations; kept separate from the entry point without becoming separate services |
+| `homelab-panel/modules/panel_actions.py` | Local script execution guards, Wake-on-LAN retry/cancel mechanics, shutdown/reboot confirmation, and configured remote action dispatch |
+| `homelab-panel/modules/panel_mqtt.py` | Long-running/reconnecting panel MQTT client, receive cache, subscriptions, callbacks, direct telemetry/discovery publication, and diagnostics |
+| `homelab-panel/modules/panel_home_assistant.py` | Home Assistant MQTT Discovery documents, local/remote buttons, HA availability snapshots, and per-device state payloads |
+| `homelab_mqtt.py` | Disposable one-shot MQTT publisher used when a command/status publication must fail now rather than sit in a reconnect queue |
+
+`app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. The three extracted modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. Configuration keys, web routes, MQTT topics/payloads, Home Assistant entity IDs, safety allow-lists, and power-script behavior are unchanged by this layout.
 
 ## Automatically create the webpage buttons in Home Assistant
 
 1. Configure Home Assistant's **MQTT integration** with the same broker as Homelab Panel and leave MQTT discovery enabled.
-2. In your active `homelab-panel/config.py`, set:
+2. In your active `homelab-panel/configs/config.py`, set:
 
    ```python
    HOME_ASSISTANT_CONFIG = {
@@ -27,7 +43,7 @@ Homelab Panel monitors and controls homelab devices through a Flask webpage and 
    ```
 
 3. Set the broker/credentials in `MQTT_CONFIG`. Keep `panel_control_topic` nonempty and `MQTT_CONFIG["retain"] = False`.
-4. Configure your webpage buttons in `homelab-panel/devices.py` and restart Homelab Panel. No separate Home Assistant YAML is required for each button.
+4. Configure your webpage buttons in `homelab-panel/configs/devices.py` and restart Homelab Panel. No separate Home Assistant YAML is required for each button.
 5. In Home Assistant, open **Settings → Devices & services → MQTT** to find the devices and their button entities. You can add these entities to your chosen dashboard; discovery does not edit an existing custom dashboard layout.
 
 The following controls are created automatically:
@@ -43,7 +59,7 @@ Local buttons act on **the machine running Homelab Panel**. Remote buttons retai
 
 The cancel-WoL entity remains registered in Home Assistant; it only cancels an active WoL job. The webpage displays its cancel button only while a job is active. A Home Assistant press uses the same application action as the webpage, but the webpage's JavaScript confirmation dialog is not transferred to Home Assistant. Delayed shutdown/reboot scripts still schedule their action one minute later, and cancellation remains available.
 
-Discovery runs when the panel connects/reconnects to MQTT and when Home Assistant announces its configured online status. Existing remote entity IDs are stable. Add or edit a button in `devices.py` and restart the panel to publish it. Removing a config entry prevents it from executing, but an old retained discovery entry/entity may need manual removal from the broker/Home Assistant. This app does not automatically delete previously discovered entities.
+Discovery runs when the panel connects/reconnects to MQTT and when Home Assistant announces its configured online status. Existing remote entity IDs are stable. Add or edit a button in `homelab-panel/configs/devices.py` and restart the panel to publish it. Removing a config entry prevents it from executing, but an old retained discovery entry/entity may need manual removal from the broker/Home Assistant. This app does not automatically delete previously discovered entities.
 
 Home Assistant also receives combined-online and ping binary sensors, uptime, last-command, and job-status sensors for each remote device. Combined online requires both ping and fresh MQTT `power=online` while the panel is connected to the broker.
 
@@ -65,13 +81,15 @@ sudo apt install python3 python3-flask python3-paho-mqtt wakeonlan iputils-ping
 From the project root, create the active configs:
 
 ```bash
-cp homelab-panel/config.example.py homelab-panel/config.py
-cp homelab-panel/devices.example.py homelab-panel/devices.py
-cp homelab-control/config.example.json homelab-control/config.json
+cp homelab-panel/configs/config.example.py homelab-panel/configs/config.py
+cp homelab-panel/configs/devices.example.py homelab-panel/configs/devices.py
+cp homelab-control/configs/config.example.json homelab-control/configs/config.json
 chmod +x scripts/*.sh
 ```
 
-`cp` copies each example to its active filename. Create the remote JSON config only on hosts using the agent. `chmod +x` makes the bundled action scripts executable. Edit hostnames, credentials, device addresses, MAC addresses, topics, and allowed commands before starting services. Keep the full project layout: both Python components find `scripts/` through their common parent directory.
+`cp` copies each example to its active filename inside that component's `configs/` directory. Create the remote JSON config only on hosts using the agent. `chmod +x` makes the bundled action scripts executable. Edit hostnames, credentials, device addresses, MAC addresses, topics, and allowed commands before starting services. Keep the full project layout: the panel imports its own `configs/` and `modules/` relative to `app.py`, the remote agent resolves `configs/config.json` and `modules/homelab_control_lib.sh` relative to its own directory, and both components still find the shared `scripts/` directory through the project root.
+
+The active configuration locations are exact: `homelab-panel/configs/config.py`, `homelab-panel/configs/devices.py`, and (when the agent is used) `homelab-control/configs/config.json`. Root-level `homelab-panel/config.py`, `homelab-panel/devices.py`, and `homelab-control/config.json` are not read. When upgrading an older installation, move your existing active files into these `configs/` directories rather than replacing them with the examples.
 
 Do not overwrite your active configs when upgrading. Copy relevant new options from the examples; the optional Home Assistant status-topic options have defaults when omitted. Active configs and runtime state/logs are ignored by Git and omitted from clean release packages.
 
@@ -120,7 +138,7 @@ journalctl -u homelab-controll.service -f
 
 `restart` reloads the app and its configuration. `status` shows service health. `journalctl -u UNIT` limits logs to that unit; `-f` follows new log entries. Substitute either agent service name when investigating that agent.
 
-## Panel configuration: `homelab-panel/config.py`
+## Panel configuration: `homelab-panel/configs/config.py`
 
 ### General settings
 
@@ -182,7 +200,7 @@ python3 -c 'import secrets; print(secrets.token_hex(32))'
 
 Python's `-c` runs the quoted expression; it prints 32 random bytes as hexadecimal. When login is enabled, all application pages/actions require a session except login and static files. The legacy `PANEL_TOKEN` is then unused. Use HTTPS through a configured reverse proxy when credentials cross an untrusted network.
 
-## Device configuration: `homelab-panel/devices.py`
+## Device configuration: `homelab-panel/configs/devices.py`
 
 `REMOTE_DEVICES` maps a unique device ID to its configuration. `LOCAL_SERVER` defines buttons on the panel host. The examples include remote, ping-only, and local configurations.
 
@@ -205,7 +223,7 @@ Python's `-c` runs the quoted expression; it prints 32 random bytes as hexadecim
 | `label` | Wake button name on both the webpage and HA |
 | `mac` | Target MAC address for the magic packet |
 | `ip` | Target IP/hostname for ping and power confirmation |
-| `confirm` | Webpage confirmation text; empty skips the browser prompt |
+| `confirm` | Webpage confirmation text; `$TITLE` is replaced with the owning device `title`; empty skips the browser prompt |
 | `retry.enabled` | Whether to send further packets while waiting for ping; default `False` |
 | `retry.interval_seconds` | Ping-wait window between attempts; default `15`, minimum `1` |
 | `retry.max_attempts` | Maximum send attempts when retry is enabled; default `20`, minimum `1`; disabled retry sends once |
@@ -247,9 +265,19 @@ Every button supports:
 | `confirmation` | `shutdown`, `reboot`, or `none`; omitted values infer shutdown/reboot for built-in power command IDs |
 | `color` | Web button CSS class: `ok`, `warn`, `danger`, or `neutral` |
 | `icon` | Web label icon/emoji; not copied to HA's separate MDI-icon field |
-| `confirm` | Browser confirmation text; empty skips the browser prompt |
+| `confirm` | Browser confirmation text; `$TITLE` is replaced with the owning device `title`; empty skips the browser prompt |
 
 Use nonempty, stable device/button IDs containing letters, digits, `_`, or `-` for routes/discovery. Keep `power_on`, `cancel_wol`, `shutdown`, `reboot`, and `wake` for the built-in actions/discovery IDs. Labels can contain spaces and Unicode.
+
+Use `$TITLE` when a confirmation should follow the configured device title automatically. The supplied examples use `$TITLE` by default for every non-empty `confirm` value, so changing a device `title` automatically updates its browser prompts. The replacement is performed only for the browser confirmation text; it does not change the button label, MQTT device ID, command payload, or Home Assistant entity. For example:
+
+```python
+"title": "Zotac RI531",
+# ...
+"confirm": "Er du sikker på at du vil slukke '$TITLE' om 1 minut?",
+```
+
+renders as `Er du sikker på at du vil slukke 'Zotac RI531' om 1 minut?`. Literal confirmation strings without `$TITLE` continue to work unchanged. Confirmation strings are JSON-encoded when inserted into the page, so quotes in the resolved text cannot break the JavaScript confirmation call. The same placeholder is accepted by local button confirmations and resolves against `LOCAL_SERVER["title"]`.
 
 Example custom button:
 
@@ -262,17 +290,17 @@ Example custom button:
     "confirmation": "none",
     "color": "ok",
     "icon": "🐳",
-    "confirm": "Kør Watchtower?",
+    "confirm": "Kør Watchtower på '$TITLE'?",
 }
 ```
 
-Its remote `config.json` must independently allow `run_watchtower`. The example Watchtower script is **not bundled**: provide your reviewed custom script before using that button. Plain custom filenames resolve from the project root; nested/absolute paths and symlinks escaping the allowed directory are rejected. External integrations need an executable wrapper at that supported location. The shared `scripts/` directory contains the built-in power helpers.
+Its remote `homelab-control/configs/config.json` must independently allow `run_watchtower`. The example Watchtower script is **not bundled**: provide your reviewed custom script before using that button. Plain custom filenames resolve from the project root; nested/absolute paths and symlinks escaping the allowed directory are rejected. External integrations need an executable wrapper at that supported location. The shared `scripts/` directory contains the built-in power helpers.
 
 ### Local buttons
 
-`LOCAL_SERVER` contains `title`, optional `name`, and `buttons`. `title` is the local section heading on the Homelab Panel webpage. `name` is the Home Assistant device name and should normally be the real machine/device name, for example `"Mac Mini"`; Home Assistant combines that device name with each button label. Older `devices.py` files without `name` remain compatible and use `title` as the HA device name. Each button has `id`, `label`, `script`, `color`, `icon`, and `confirm`, with the same display meanings as above. `script` is a direct executable filename inside the project's `scripts/` directory. Both web and HA commands select an existing button ID; incoming MQTT cannot supply a script path or command arguments.
+`LOCAL_SERVER` contains `title`, optional `name`, and `buttons`. `title` is the local section heading on the Homelab Panel webpage. `name` is the Home Assistant device name and should normally be the real machine/device name, for example `"Mac Mini"`; Home Assistant combines that device name with each button label. Older `configs/devices.py` files without `name` remain compatible and use `title` as the HA device name. Each button has `id`, `label`, `script`, `color`, `icon`, and `confirm`, with the same display meanings as above. The supplied non-empty local `confirm` examples also use `$TITLE`, which resolves from `LOCAL_SERVER["title"]` rather than the separate Home Assistant `name`. `script` is a direct executable filename inside the project's `scripts/` directory. Both web and HA commands select an existing button ID; incoming MQTT cannot supply a script path or command arguments.
 
-## Remote agent configuration: `homelab-control/config.json`
+## Remote agent configuration: `homelab-control/configs/config.json`
 
 | Section / keys | Meaning |
 |---|---|
@@ -353,7 +381,7 @@ Remote envelopes require `device_id` and `command`; optional `target` is `remote
 Example manual cancellation from the project root, using an agent-format JSON config for the same broker:
 
 ```bash
-printf '%s' '{"target":"local","command":"shutdown_cancel"}' | python3 homelab_mqtt.py --config homelab-control/config.json --topic homelab-panel/control --qos 0
+printf '%s' '{"target":"local","command":"shutdown_cancel"}' | python3 homelab_mqtt.py --config homelab-control/configs/config.json --topic homelab-panel/control --qos 0
 ```
 
 This command cancels a scheduled power operation on the panel host. `printf '%s'` passes the JSON verbatim on stdin. `--config` selects broker credentials from the file's `mqtt` object, `--topic` selects the destination, and `--qos 0` selects the delivery level. Leave `--retain` off for commands. On a panel-only host, a separate JSON file containing `{"mqtt":{"host":"BROKER","port":1883,"user":"USER","pass":"PASSWORD"}}` is sufficient; pass its path to `--config`.
@@ -383,7 +411,7 @@ python3 homelab_mqtt.py --help
 | Publisher flag | Value / default | Effect and example |
 |---|---|---|
 | `-h`, `--help` | No value | Print help and exit without reading payload/config or contacting a broker |
-| `--config PATH` | Required in normal CLI use | Read the JSON `mqtt` object; `--config homelab-control/config.json`. Credentials remain in the file. |
+| `--config PATH` | Required in normal CLI use | Read the JSON `mqtt` object; `--config homelab-control/configs/config.json`. Credentials remain in the file. |
 | `--topic TOPIC` | Required with `--config` | Publish to this topic; empty names and `+`/`#` wildcards are rejected. Payload is read verbatim from stdin. |
 | `--qos 0`, `1`, or `2` | Default `1` for CLI; panel uses `MQTT_CONFIG.qos` | MQTT delivery level: at most once, at least once, or exactly once at the protocol level |
 | `--retain` | Off by default | Retain telemetry at the broker. The shell status helper enables it; leave it off for commands. |
@@ -418,7 +446,7 @@ The remaining flags belong to external tools. They are not arguments to `app.py`
 | `scripts/shutdown_cancel.sh` → `shutdown -c` | Cancel a scheduled shutdown or reboot; `-c` means cancel |
 | `scripts/reboot_cancel.sh` → `shutdown -c` | Same cancellation operation |
 | `scripts/homelab_action_common.sh` | Sourced helper; resolves shared paths and selects direct root shutdown or `sudo shutdown` |
-| `homelab-control/homelab_control_lib.sh` | Sourced helper for config, command status, history, and retained telemetry |
+| `homelab-control/modules/homelab_control_lib.sh` | Sourced helper for config, command status, history, and retained telemetry |
 | `wakeonlan -i BROADCAST MAC` | Send a magic packet; `-i` selects the broadcast destination |
 | `ping -c 1 -W TIMEOUT HOST` | Send one probe (`-c 1`); `-W` is `1` second on Linux or `1000` milliseconds on macOS; subprocess timeout is three seconds |
 
