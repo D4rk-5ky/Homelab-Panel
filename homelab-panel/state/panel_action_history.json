@@ -1,0 +1,12 @@
+{
+  "aoostar_wtr": [
+    {
+      "timestamp": "2026-09-26T06:32:22",
+      "archived_at": "2026-09-26T06:32:22",
+      "command": "power_on",
+      "result": "sent",
+      "message": "MQTT homelab-panel/aoostar-wtr/control: Wake-on-LAN magic packet sendt til Aoostar WTR",
+      "source": "Homelab Panel"
+    }
+  ]
+}

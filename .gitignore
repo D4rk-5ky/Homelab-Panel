@@ -1,0 +1,13 @@
+# HomeLab panel
+
+config*
+devices*
+
+! config.example.py
+! devices.example.py
+
+# HomeLab Control
+
+config*
+
+! config.example.json

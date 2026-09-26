@@ -7,7 +7,8 @@ import sys
 import paho.mqtt.client as mqtt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+SCRIPTS_DIR = PROJECT_ROOT
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 

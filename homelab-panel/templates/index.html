@@ -64,6 +64,11 @@
       box-shadow: inset 0 0 0 1px rgba(16,185,129,0.15);
     }
 
+    .status-partial {
+      border-color: #f59e0b;
+      box-shadow: inset 0 0 0 1px rgba(245,158,11,0.15);
+    }
+
     .status-offline {
       border-color: #ef4444;
       box-shadow: inset 0 0 0 1px rgba(239,68,68,0.15);
@@ -116,6 +121,37 @@
       font-size: 14px;
     }
 
+    .account-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .logout-button {
+      width: auto;
+      padding: 8px 12px;
+      background: #374151;
+      font-size: 14px;
+    }
+
+    .history-link {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: #374151;
+      color: #f3f4f6;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    .history-link:hover {
+      filter: brightness(1.15);
+    }
+
     .flash {
       border-radius: 10px;
       padding: 12px;
@@ -146,6 +182,15 @@
     <h1>⚙️ Homelab Kontrolpanel</h1>
     <p class="muted">Opdateret: {{ now }} · Auto-opdatering: {{ page_refresh_seconds }} sekunder</p>
 
+    {% if web_auth_enabled %}
+      <div class="account-bar">
+        <span class="muted">Logget ind som {{ logged_in_username }}</span>
+        <form method="post" action="{{ url_for('logout') }}">
+          <button class="logout-button" type="submit">Log ud</button>
+        </form>
+      </div>
+    {% endif %}
+
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         {% for category, message in messages %}
@@ -165,13 +210,31 @@
             <div class="status-main">
               {% if st["overall"] == "online" %}
                 🟢 {{ st["overall_text"] }}
+              {% elif st["overall"] == "partial" %}
+                🟡 {{ st["overall_text"] }}
               {% else %}
                 🔴 {{ st["overall_text"] }}
               {% endif %}
             </div>
 
-            <div class="status-line">Ping: {{ st["ping_text"] }}</div>
-            <div class="status-line">MQTT: {{ st["mqtt_info"] }}</div>
+            <div class="status-line">
+              Ping:
+              {% if st["ping_ok"] %}🟢{% else %}🔴{% endif %}
+              {{ st["ping_text"] }}
+            </div>
+            <div class="status-line">
+              MQTT:
+              {% if st["mqtt_online_ok"] %}
+                🟢
+              {% elif not st["mqtt_configured"] %}
+                ⚪
+              {% elif st["mqtt_connected"] %}
+                🟡
+              {% else %}
+                🔴
+              {% endif %}
+              {{ st["mqtt_info"] }}
+            </div>
             <div class="status-line">Handling: {{ st["action_text"] }}</div>
             <div class="status-line">Sidste kommando: {{ st["last_command"] }}</div>
             <div class="status-line">Sidste resultat: {{ st["last_result"] }}</div>
@@ -181,6 +244,10 @@
             {% if st["ip"] %}
               <div class="status-line">IP: {{ st["ip"] }}</div>
             {% endif %}
+
+            <a class="history-link" href="{{ url_for('device_history', device_id=device_id, token=token) }}">
+              🕘 Historik
+            </a>
           </div>
         {% endfor %}
       </div>
