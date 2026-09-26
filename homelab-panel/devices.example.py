@@ -56,7 +56,7 @@ REMOTE_DEVICES = {
         "mqtt_controls": {
             "title": "Aoostar WTR kontrol",
             "topic": "aoostar/control/power",
-            # True sender JSON med command+job_id. 0.0.9 Homelab Control kan
+            # True sender JSON med command+job_id. Homelab Control kan
             # dermed rapportere resultater på præcis samme job i panelet.
             # False/udeladt beholder legacy plain-text payloads.
             "json_jobs": True,
@@ -177,6 +177,9 @@ REMOTE_DEVICES = {
 # ============================================================
 # LOKAL KONTROL FOR HOMELAB-SERVEREN
 # ============================================================
+# Alle buttons bliver også Home Assistant-knapper, når HA discovery er aktiveret.
+# HA sender kun button.id med target=local; script vælges fra denne allow-list.
+# De samme scripts, path-checks og root/sudo-rettigheder bruges som på websiden.
 
 LOCAL_SERVER = {
     "title": "Lokal enhedskontrol",

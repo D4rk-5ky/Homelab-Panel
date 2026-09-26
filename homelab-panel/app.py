@@ -47,6 +47,8 @@ except ImportError:
         "discovery_prefix": "homeassistant",
         "state_prefix": "homelab-panel/ha",
         "availability_topic": "homelab-panel/availability",
+        "status_topic": "homeassistant/status",
+        "status_online_payload": "online",
         "qos": 1,
         "retain": True,
     }
@@ -446,6 +448,18 @@ def run_local_script(script_name: str) -> tuple[bool, str]:
         return False, f"Script er ikke eksekverbart: {script_path}"
 
     return run_command([script_path])
+
+
+def execute_local_action(command: str) -> tuple[bool, str]:
+    # Both web and MQTT select a configured button ID. Neither interface can
+    # supply a script path; run_local_script keeps the existing path checks.
+    button = next((b for b in LOCAL_SERVER.get("buttons", []) if b["id"] == command), None)
+    if not button:
+        return False, "Ukendt lokal handling."
+    ok, message = run_local_script(button["script"])
+    if ok:
+        return True, f"Kørte lokalt script: {button['script']} -> {message}"
+    return False, f"Lokalt script fejlede: {button['script']} -> {message}"
 
 
 def ping_host(ip: str) -> bool:
@@ -1405,21 +1419,33 @@ def process_panel_control_message(payload: str) -> None:
         print("Homelab-panel control rejected: payload must be a JSON object", flush=True)
         return
 
-    device_id = str(command_data.get("device_id", "")).strip()
     command = str(command_data.get("command", "")).strip()
-    if not device_id or not command:
-        print("Homelab-panel control rejected: device_id and command are required", flush=True)
+    target = str(command_data.get("target", "remote")).strip()
+    if not command or target not in {"remote", "local"}:
+        print("Homelab-panel control rejected: command and a valid target are required", flush=True)
         return
 
-    panel_control_topic = MQTT_CONFIG.get("panel_control_topic", "").strip() or "panel-control"
-    ok, message = execute_and_record_remote_action(
-        device_id,
-        command,
-        f"MQTT {panel_control_topic}",
-    )
+    device_id = str(command_data.get("device_id", "")).strip()
+    if target == "local":
+        # Require an unambiguous local envelope; never fall back to local
+        # execution for a missing/unknown remote device.
+        if "device_id" in command_data:
+            print("Homelab-panel control rejected: local target must not include device_id", flush=True)
+            return
+        ok, message = execute_local_action(command)
+    else:
+        if not device_id:
+            print("Homelab-panel control rejected: device_id is required for remote commands", flush=True)
+            return
+        panel_control_topic = MQTT_CONFIG.get("panel_control_topic", "").strip() or "panel-control"
+        ok, message = execute_and_record_remote_action(
+            device_id,
+            command,
+            f"MQTT {panel_control_topic}",
+        )
     outcome = "success" if ok else "failure"
     print(
-        f"Homelab-panel control {outcome}: device_id={device_id} command={command} message={message}",
+        f"Homelab-panel control {outcome}: target={target} device_id={device_id} command={command} message={message}",
         flush=True,
     )
 
@@ -1578,6 +1604,33 @@ def ha_device_block(device_id: str, device: dict) -> dict:
     }
 
 
+def publish_home_assistant_button(
+    node_id: str, button_id: str, label: str, command_payload: dict, device: dict,
+) -> None:
+    if not home_assistant_enabled() or not get_mqtt_connected():
+        return
+    control_topic = str(MQTT_CONFIG.get("panel_control_topic", "")).strip()
+    if not control_topic or not button_id:
+        return
+    discovery_prefix = str(HOME_ASSISTANT_CONFIG.get("discovery_prefix", "homeassistant")).strip().rstrip("/")
+    config = {
+        "name": label,
+        "unique_id": f"{node_id}_{button_id}",
+        "command_topic": control_topic,
+        "payload_press": json.dumps(command_payload, ensure_ascii=False, separators=(",", ":")),
+        # Retain discovery configuration, never the button's power command.
+        "retain": False,
+        "availability_topic": str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip(),
+        "device": device,
+    }
+    topic = f"{discovery_prefix}/button/{node_id}/{button_id}/config"
+    publish_mqtt_direct(
+        topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")),
+        qos=int(HOME_ASSISTANT_CONFIG.get("qos", 1)),
+        retain=bool(HOME_ASSISTANT_CONFIG.get("retain", True)),
+    )
+
+
 def publish_home_assistant_discovery() -> None:
     if not home_assistant_enabled() or not get_mqtt_connected():
         return
@@ -1585,7 +1638,6 @@ def publish_home_assistant_discovery() -> None:
     availability_topic = str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip()
     qos = int(HOME_ASSISTANT_CONFIG.get("qos", 1))
     retain = bool(HOME_ASSISTANT_CONFIG.get("retain", True))
-    control_topic = str(MQTT_CONFIG.get("panel_control_topic", "homelab-panel/control")).strip()
 
     for device_id, device in REMOTE_DEVICES.items():
         state_topic = ha_state_topic(device_id)
@@ -1641,44 +1693,55 @@ def publish_home_assistant_discovery() -> None:
             topic = f"{discovery_prefix}/{component}/homelab_panel_{device_id}/{object_id}/config"
             publish_mqtt_direct(topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")), qos=qos, retain=retain)
 
-        if control_topic and device.get("wol", {}).get("enabled"):
-            config = {
-                "name": "Wake",
-                "unique_id": f"homelab_panel_{device_id}_wake",
-                "command_topic": control_topic,
-                "payload_press": json.dumps({"device_id": device_id, "command": "power_on"}, separators=(",", ":")),
-                "availability_topic": availability_topic,
-                "device": dev,
-            }
-            topic = f"{discovery_prefix}/button/homelab_panel_{device_id}/wake/config"
-            publish_mqtt_direct(topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")), qos=qos, retain=retain)
-
-            cancel_cfg = {
-                "name": "Cancel Wake-on-LAN",
-                "unique_id": f"homelab_panel_{device_id}_cancel_wol",
-                "command_topic": control_topic,
-                "payload_press": json.dumps({"device_id": device_id, "command": "cancel_wol"}, separators=(",", ":")),
-                "availability_topic": availability_topic,
-                "device": dev,
-            }
-            topic = f"{discovery_prefix}/button/homelab_panel_{device_id}/cancel_wol/config"
-            publish_mqtt_direct(topic, json.dumps(cancel_cfg, ensure_ascii=False, separators=(",", ":")), qos=qos, retain=retain)
+        node_id = f"homelab_panel_{device_id}"
+        wol_cfg = device.get("wol", {})
+        if wol_cfg.get("enabled"):
+            publish_home_assistant_button(
+                node_id, "wake", str(wol_cfg.get("label") or "Wake"),
+                {"device_id": device_id, "command": "power_on"}, dev,
+            )
+            publish_home_assistant_button(
+                node_id, "cancel_wol", "Annullér Wake-on-LAN",
+                {"device_id": device_id, "command": "cancel_wol"}, dev,
+            )
 
         mqtt_cfg = device.get("mqtt_controls") or {}
         for button in mqtt_cfg.get("buttons", []):
             command_id = str(button.get("id", "")).strip()
-            if not command_id or not control_topic:
-                continue
-            config = {
-                "name": str(button.get("label") or command_id),
-                "unique_id": f"homelab_panel_{device_id}_{command_id}",
-                "command_topic": control_topic,
-                "payload_press": json.dumps({"device_id": device_id, "command": command_id}, separators=(",", ":")),
-                "availability_topic": availability_topic,
-                "device": dev,
-            }
-            topic = f"{discovery_prefix}/button/homelab_panel_{device_id}/{command_id}/config"
-            publish_mqtt_direct(topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")), qos=qos, retain=retain)
+            publish_home_assistant_button(
+                node_id, command_id, str(button.get("label") or command_id),
+                {"device_id": device_id, "command": command_id}, dev,
+            )
+
+    # A separate namespace prevents a remote device named "local" from sharing
+    # IDs or discovery topics with the host running this panel.
+    local_device = {
+        "identifiers": ["homelab_local_panel"],
+        "name": str(LOCAL_SERVER.get("title") or "Homelab Panel"),
+        "manufacturer": "Homelab Panel",
+        "model": "Local Panel Controls",
+    }
+    for button in LOCAL_SERVER.get("buttons", []):
+        command_id = str(button.get("id", "")).strip()
+        publish_home_assistant_button(
+            "homelab_local_panel", command_id, str(button.get("label") or command_id),
+            {"target": "local", "command": command_id}, local_device,
+        )
+
+
+def publish_home_assistant_snapshot() -> None:
+    # HA can restart after the panel, including when retained discovery is off.
+    # Reuse cached status here so its MQTT birth callback does not run pings.
+    if not home_assistant_enabled() or not get_mqtt_connected():
+        return
+    availability_topic = str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip()
+    publish_mqtt_direct(availability_topic, "online", qos=int(HOME_ASSISTANT_CONFIG.get("qos", 1)), retain=True)
+    publish_home_assistant_discovery()
+    with DEVICE_STATUS_CACHE_LOCK:
+        statuses = {key: dict(value) for key, value in DEVICE_STATUS_CACHE.items()}
+    for device_id, device in REMOTE_DEVICES.items():
+        if device_id in statuses:
+            publish_home_assistant_state(device_id, device, statuses[device_id])
 
 
 def publish_home_assistant_state(device_id: str, device: dict, status: dict) -> None:
@@ -1879,16 +1942,18 @@ def on_connect_compat(*args):
     if panel_control_topic:
         topics.add(panel_control_topic)
 
+    if home_assistant_enabled():
+        status_topic = str(HOME_ASSISTANT_CONFIG.get("status_topic", "homeassistant/status")).strip()
+        if status_topic:
+            topics.add(status_topic)
+
     MQTT_SUBSCRIPTIONS.clear()
     MQTT_SUBSCRIPTIONS.update(topics)
     for topic in sorted(topics):
         client.subscribe(topic, qos=1)
         print(f"Homelab-panel subscribed to {topic}", flush=True)
 
-    if home_assistant_enabled():
-        availability_topic = str(HOME_ASSISTANT_CONFIG.get("availability_topic", "homelab-panel/availability")).strip()
-        publish_mqtt_direct(availability_topic, "online", qos=int(HOME_ASSISTANT_CONFIG.get("qos", 1)), retain=True)
-        publish_home_assistant_discovery()
+    publish_home_assistant_snapshot()
 
     event_type = "mqtt_reconnect" if had_previous_connection else "mqtt_connect"
     for device_id, device in REMOTE_DEVICES.items():
@@ -1939,6 +2004,11 @@ def on_message_compat(client, userdata, msg):
             print("Homelab-panel control rejected: retained control messages are not executed", flush=True)
             return
         threading.Thread(target=process_panel_control_message, args=(payload,), daemon=True).start()
+        return
+
+    if home_assistant_enabled() and msg.topic == str(HOME_ASSISTANT_CONFIG.get("status_topic", "homeassistant/status")).strip():
+        if payload == str(HOME_ASSISTANT_CONFIG.get("status_online_payload", "online")):
+            publish_home_assistant_snapshot()
         return
 
     handle_device_power_transition(msg.topic, previous_payload, payload)
@@ -2153,17 +2223,8 @@ def local_button(button_id: str):
     if not check_token():
         return "Forbudt", 403
 
-    button = next((b for b in LOCAL_SERVER["buttons"] if b["id"] == button_id), None)
-    if not button:
-        flash("Ukendt lokal handling.", "error")
-        return redirect(url_for("index", token=request.args.get("token", "")))
-
-    ok, msg = run_local_script(button["script"])
-
-    if ok:
-        flash(f"Kørte lokalt script: {button['script']} -> {msg}", "success")
-    else:
-        flash(f"Lokalt script fejlede: {button['script']} -> {msg}", "error")
+    ok, msg = execute_local_action(button_id)
+    flash(msg, "success" if ok else "error")
 
     return redirect(url_for("index", token=request.args.get("token", "")))
 

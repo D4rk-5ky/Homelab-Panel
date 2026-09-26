@@ -24,6 +24,36 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.11 — 2026-09-26
+
+### Automatic Home Assistant action buttons
+
+- Added MQTT discovery for every configured `LOCAL_SERVER.buttons` entry, grouped under the local server title and the separate `homelab_local_panel` identifier/topic namespace.
+- Retained discovery for remote device MQTT buttons and enabled Wake/cancel-WoL controls; existing remote entity IDs and topics remain unchanged.
+- Wake buttons now use the same configured label as the webpage; cancel-WoL uses the webpage's label.
+- Added `publish_home_assistant_button()` to share button discovery generation across local, remote and WoL controls. Button command payloads explicitly set `retain=False`; discovery retention remains configurable.
+- Added `publish_home_assistant_snapshot()` to republish discovery, panel availability and cached device state on broker connection or Home Assistant's online birth message. It does not run pings inside the MQTT callback.
+- Added optional `HOME_ASSISTANT_CONFIG.status_topic` (default `homeassistant/status`; empty disables the subscription) and `status_online_payload` (default `online`). Older configs use these defaults.
+- Discovery remains opt-in through `HOME_ASSISTANT_CONFIG.enabled`; example/default is still False. Config changes take effect after restarting the panel.
+
+### Shared local command handling
+
+- Added `execute_local_action()` so the webpage and MQTT both select local scripts from `LOCAL_SERVER.buttons` and reuse existing path/executable/privilege checks.
+- Added explicit panel-control JSON `{"target":"local","command":"<button-id>"}`. A local envelope containing `device_id` is rejected, and a missing or unknown remote device never falls back to local execution.
+- Existing remote `device_id`/`command` messages remain valid; an optional explicit `target=remote` is accepted. Unknown targets and missing commands are rejected.
+- Retained panel-control rejection covers both local and remote commands. Web auth/token guards and all existing shutdown/reboot delays, allow-lists, and confirmation code remain intact.
+- The remote agent and bundled scripts were not modified. Browser confirmation prompts do not transfer to Home Assistant MQTT button presses.
+
+### Documentation and verification
+
+- Reworked README into a current-use guide covering automatic HA setup, all configuration fields, web/MQTT/script commands, external command flags, installation, systemd usage, and limitations. It explicitly distinguishes HA entities from dashboard placement.
+- Updated both affected panel configuration examples and the complete function/command map, including browser callbacks and regression-test helpers.
+- Preserved both original README disclaimer sections verbatim because no replacement disclaimer was supplied.
+- Added `tests/test_home_assistant.py` with 11 offline regression tests using real Flask/Jinja and mocked external I/O, plus `VALIDATION.md` for reproducible checks and manifest accounting.
+- Verified all 24 original files remain present; original executable bits are preserved. All newly added project files are included in the clean ZIP.
+- Python compile checks, shell syntax checks, embedded Python compilation, JSON/Jinja parsing, regression tests, documentation coverage and final ZIP checks are recorded in `VALIDATION.md`.
+- Live Home Assistant/MQTT integration, real power/WoL operations, browser interaction, and Linux systemd execution were not tested in this macOS workspace.
+
 ## 0.0.10 — 2026-09-26
 
 ### Shared power scripts moved to `scripts/`
