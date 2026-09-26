@@ -10,14 +10,15 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import homelab_mqtt as publisher
 from shared_modules import mqtt as shared_mqtt
+publisher = shared_mqtt
 from test_home_assistant import load_panel
 
 
@@ -116,14 +117,46 @@ class PublisherTests(unittest.TestCase):
     def test_client_construction_supports_paho_callback_versions(self):
         """New clients use API v2; older Paho keeps its original constructor."""
         with patch.object(shared_mqtt.mqtt, 'Client') as client:
-            shared_mqtt.create_client({})
+            client.return_value.connect.return_value = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+            shared_mqtt.MqttClient({'host': 'broker'}).start(mode='connect')
             self.assertTrue(client.call_args.kwargs['clean_session'])
             self.assertEqual(client.call_args.kwargs['callback_api_version'], shared_mqtt.mqtt.CallbackAPIVersion.VERSION2)
         legacy = Mock(spec=['Client', 'MQTTv311'])
         legacy.MQTTv311 = 4
+        legacy.Client.return_value.connect.return_value = 0
         with patch.object(shared_mqtt, 'mqtt', legacy):
-            shared_mqtt.create_client({})
+            shared_mqtt.MqttClient({'host': 'broker'}).start(mode='connect')
         legacy.Client.assert_called_once_with(clean_session=True, protocol=4)
+
+    def test_shared_long_running_client_api(self):
+        """Both components can use one shared lifecycle/subscription/message/publish API."""
+        client = Mock()
+        client.connect.return_value = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+        client.publish.return_value.rc = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+        events = []
+        with patch.object(shared_mqtt.mqtt, 'Client', return_value=client):
+            transport = shared_mqtt.MqttClient(
+                {'host': 'broker', 'port': 1884, 'keepalive': 45, 'user': 'alice', 'pass': 'secret'},
+                client_id='shared-test',
+                will={'topic': 'status', 'payload': 'offline', 'qos': 1, 'retain': True},
+                subscriptions=lambda: [('one/topic', 1), ('two/topic', 0)],
+                on_connect=lambda: events.append(('connect',)),
+                on_disconnect=lambda reason: events.append(('disconnect', reason)),
+                on_message=lambda topic, payload, retain, qos: events.append(('message', topic, payload, retain, qos)),
+            ).start(mode='connect')
+        client.connect.assert_called_once_with('broker', 1884, keepalive=45)
+        client.username_pw_set.assert_called_once_with('alice', 'secret')
+        client.will_set.assert_called_once_with('status', payload='offline', qos=1, retain=True)
+        client.on_connect(client, None, {}, 0, None)
+        self.assertTrue(transport.connected)
+        self.assertEqual(client.subscribe.call_count, 2)
+        client.on_message(client, None, types.SimpleNamespace(topic='one/topic', payload=' æ '.encode(), retain=True, qos=1))
+        self.assertEqual(events[-1], ('message', 'one/topic', 'æ', True, 1))
+        self.assertTrue(transport.publish('state', 'online', qos=1, retain=True))
+        client.on_disconnect(client, None, None, 4, None)
+        self.assertFalse(transport.connected)
+        self.assertEqual(events[0], ('connect',))
+        self.assertEqual(events[-1][0], 'disconnect')
 
     def test_parent_bounds_worker_and_keeps_credentials_off_argv(self):
         """The Paho child receives private input and retains the hard time limit."""
@@ -145,7 +178,8 @@ class PublisherTests(unittest.TestCase):
         """Panel commands preserve their own QoS/retain settings and errors."""
         panel = load_panel()
         panel.MQTT_CONFIG.update(qos=2, retain=False)
-        with patch.object(panel, 'publish_message', return_value=(False, 'failed')) as publish, patch.object(panel, 'run_command') as run:
+        runtime_module = sys.modules[panel.MQTT_RUNTIME.__class__.__module__]
+        with patch.object(runtime_module, 'publish_message', return_value=(False, 'failed')) as publish, patch.object(panel, 'run_command') as run:
             self.assertEqual(panel.mqtt_publish('device/control', 'wake'), (False, 'failed'))
             publish.assert_called_once_with(panel.MQTT_CONFIG, 'device/control', 'wake', qos=2, retain=False)
             run.assert_not_called()
@@ -157,19 +191,19 @@ class PublisherTests(unittest.TestCase):
             settings = {'host': 'broker', 'user': 'alice', 'pass': 'secret'}
             config.write_text(json.dumps({'mqtt': settings}))
             with patch.object(shared_mqtt, 'publish_message', return_value=(True, 'sent')) as publish, patch.object(sys, 'stdin', io.StringIO('æ\n trailing ')), contextlib.redirect_stdout(io.StringIO()):
-                rc = publisher.main(['--config', str(config), '--topic', 'state', '--qos', '2', '--retain', '--timeout', '3'])
+                rc = publisher.cli_main(['--config', str(config), '--topic', 'state', '--qos', '2', '--retain', '--timeout', '3'])
             self.assertEqual(rc, 0)
             publish.assert_called_once_with(settings, 'state', 'æ\n trailing ', qos=2, retain=True, timeout=3)
             with patch.object(shared_mqtt, 'publish_message', return_value=(False, 'rejected')), patch.object(sys, 'stdin', io.StringIO('data')), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(publisher.main(['--config', str(config), '--topic', 'state']), 1)
+                self.assertEqual(publisher.cli_main(['--config', str(config), '--topic', 'state']), 1)
 
     def test_cli_help_and_config_errors(self):
         """Help exits before input/network work; missing config exits nonzero."""
         with patch.object(shared_mqtt, 'publish_message') as publish, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as result:
-                publisher.main(['--help'])
+                publisher.cli_main(['--help'])
             self.assertEqual(result.exception.code, 0)
-            self.assertEqual(publisher.main(['--config', '/nonexistent/homelab-config.json', '--topic', 'state']), 1)
+            self.assertEqual(publisher.cli_main(['--config', '/nonexistent/homelab-config.json', '--topic', 'state']), 1)
             publish.assert_not_called()
 
     def test_shell_bridge_payload_and_failure_exit(self):
@@ -189,7 +223,7 @@ class PublisherTests(unittest.TestCase):
             shim.write_text(f'''#!{sys.executable}
 import json,os,sys
 from pathlib import Path
-if len(sys.argv)>1 and sys.argv[1].endswith('/homelab_mqtt.py'):
+if len(sys.argv)>1 and sys.argv[1].endswith('/shared_modules/mqtt.py'):
  Path(os.environ['CAPTURE']).write_text(json.dumps({{'args':sys.argv[1:],'payload':sys.stdin.read()}}))
  print('published')
  if int(os.environ['PUBLISH_RC']): print('publish failed',file=sys.stderr)

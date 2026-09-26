@@ -6,7 +6,6 @@ Homelab Panel monitors and controls homelab devices through a Flask webpage and 
 - `homelab-control/`: optional agent on each remote Linux host; keeps its JSON configuration in `configs/`, its reusable shell helper in `modules/`, runs explicitly allowed scripts, and publishes status/results.
 - `shared_modules/`: generic code that is genuinely reused by both components; currently MQTT transport only.
 - `scripts/`: shared Linux shutdown/reboot scripts and their common helper.
-- `homelab_mqtt.py`: independently executable one-shot MQTT CLI backed by `shared_modules/mqtt.py`.
 - `tests/`: regression checks for Home Assistant, command dispatch, and Paho publishing; protocol tests use localhost only.
 
 ### Panel code layout
@@ -19,14 +18,13 @@ The panel is intentionally split by responsibility without turning every helper 
 | `homelab-panel/configs/` | Active `config.py`/`devices.py` live here beside their tracked examples; `app.py` resolves this directory from its own location, not the shell working directory |
 | `homelab-panel/modules/` | Panel-specific reusable Python implementations; kept separate from the entry point without becoming separate services |
 | `homelab-panel/modules/panel_actions.py` | Local script execution guards, Wake-on-LAN retry/cancel mechanics, shutdown/reboot confirmation, and configured remote action dispatch |
-| `homelab-panel/modules/panel_mqtt.py` | Panel-specific MQTT behavior: receive cache, subscriptions, dispatch callbacks, diagnostics, and HA/panel orchestration; generic Paho setup comes from the root shared module |
+| `homelab-panel/modules/panel_mqtt.py` | Panel-specific MQTT behavior only: topic selection, receive cache, diagnostics, HA birth handling, control/status/job dispatch, and panel event hooks; it uses the shared `MqttClient`/publisher instead of implementing Paho transport |
 | `homelab-panel/modules/panel_home_assistant.py` | Home Assistant MQTT Discovery documents, local/remote buttons, HA availability snapshots, and per-device state payloads |
-| `shared_modules/mqtt.py` | Shared MQTT transport: Paho v1/v2-compatible client creation, auth, Last Will, connection-loop modes, common publish handling, payload/topic helpers, and bounded one-shot publishing |
-| `homelab_mqtt.py` | Thin independently executable one-shot CLI that delegates MQTT transport to `shared_modules/mqtt.py` |
+| `shared_modules/mqtt.py` | The single generic MQTT implementation for both components: common `MqttClient` lifecycle/subscriptions/decoded callbacks/publish/stop behavior, auth/Last Will/reconnect setup, topic derivation, bounded one-shot publishing, and the standalone MQTT CLI |
 
 `app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. Generic MQTT transport is implemented once in root `shared_modules/mqtt.py` and is imported independently by both `homelab-panel` and `homelab-control`; neither component imports the other component's modules. The three extracted modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. Configuration keys, web routes, MQTT topics/payloads, Home Assistant entity IDs, safety allow-lists, and power-script behavior are unchanged by this layout.
 
-`shared_modules/` is shared infrastructure, not another service and not a place for component-specific helpers. The panel can run without Homelab Control running, and Homelab Control can run without the panel running. If you deploy only the remote agent to another machine, keep `homelab-control/` under a project root that also contains `shared_modules/`, root `homelab_mqtt.py`, and the shared `scripts/` needed by its configured actions; you do **not** need to copy `homelab-panel/` to that machine.
+`shared_modules/` is shared infrastructure, not another service and not a place for component-specific helpers. The panel can run without Homelab Control running, and Homelab Control can run without the panel running. If you deploy only the remote agent to another machine, keep `homelab-control/` under a project root that also contains `shared_modules/` and the shared `scripts/` needed by its configured actions; you do **not** need to copy `homelab-panel/` to that machine.
 
 ## Automatically create the webpage buttons in Home Assistant
 
@@ -351,7 +349,7 @@ The panel and agent each maintain their own allow-list. MQTT text is never execu
 
 The three long-running Python applications have **no CLI argument parser**. Run them as shown above. Their `--help` is not implemented and must not be treated as a safe dry run: they can start normal work despite extra arguments. The power action scripts also have no `--help`, dry-run, or configurable-delay option.
 
-The separate `homelab_mqtt.py` publishing helper supports the flags below and has a safe `--help`. It publishes only; it does not subscribe or launch the application services.
+The shared `shared_modules/mqtt.py` module is also the standalone publishing helper. Its CLI supports the flags below and has a safe `--help`; it publishes only and does not launch either application service.
 
 ### Web routes
 
@@ -385,12 +383,12 @@ Remote envelopes require `device_id` and `command`; optional `target` is `remote
 Example manual cancellation from the project root, using an agent-format JSON config for the same broker:
 
 ```bash
-printf '%s' '{"target":"local","command":"shutdown_cancel"}' | python3 homelab_mqtt.py --config homelab-control/configs/config.json --topic homelab-panel/control --qos 0
+printf '%s' '{"target":"local","command":"shutdown_cancel"}' | python3 shared_modules/mqtt.py --config homelab-control/configs/config.json --topic homelab-panel/control --qos 0
 ```
 
 This command cancels a scheduled power operation on the panel host. `printf '%s'` passes the JSON verbatim on stdin. `--config` selects broker credentials from the file's `mqtt` object, `--topic` selects the destination, and `--qos 0` selects the delivery level. Leave `--retain` off for commands. On a panel-only host, a separate JSON file containing `{"mqtt":{"host":"BROKER","port":1883,"user":"USER","pass":"PASSWORD"}}` is sufficient; pass its path to `--config`.
 
-The panel's outgoing commands and the agent shell helper both reuse `homelab_mqtt.publish_message()`. Each publication gets a fresh Paho client with a clean session and no reconnection loop. The parent enforces a 20-second timeout, including DNS and connection setup; it kills and waits for a timed-out child. Broker credentials and payloads pass through stdin, not command-line arguments. On failure after sending, delivery can be unknown, so the publisher does not retry automatically. This preserves the panel's command timeout and also bounds shell telemetry calls. Persistent status/subscription clients retain their existing reconnect behavior.
+The panel's outgoing commands and the agent shell helper both go directly through `shared_modules/mqtt.py`; Python callers use `publish_message()` and shell callers execute the same module's CLI. Each publication gets a fresh Paho client with a clean session and no reconnection loop. The parent enforces a 20-second timeout, including DNS and connection setup; it kills and waits for a timed-out child. Broker credentials and payloads pass through stdin, not command-line arguments. On failure after sending, delivery can be unknown, so the publisher does not retry automatically. This preserves the panel's command timeout and also bounds shell telemetry calls. Persistent status/subscription clients retain their existing reconnect behavior.
 
 QoS 0 success means the message was sent locally; QoS 1/2 success waits for the corresponding MQTT acknowledgement. Neither proves that a remote script ran or that a machine completed a power transition. The one-shot client uses MQTT 3.1.1 and a fixed 60-second keepalive. See the [Paho client API](https://eclipse.dev/paho/files/paho.mqtt.python/html/client.html) for protocol completion semantics.
 
@@ -409,7 +407,7 @@ The agent's `topics.control_power` accepts a plain command ID (`shutdown_delay`,
 Use this command to inspect the publisher without publishing:
 
 ```bash
-python3 homelab_mqtt.py --help
+python3 shared_modules/mqtt.py --help
 ```
 
 | Publisher flag | Value / default | Effect and example |

@@ -72,7 +72,7 @@ STATUS_MONITOR_INTERVAL_SECONDS = max(2, int(STATUS_MONITOR_INTERVAL_SECONDS))
 PANEL_JOB_MAX_ENTRIES = max(1, int(PANEL_JOB_MAX_ENTRIES))
 
 # The panel and control components share generic MQTT transport primitives.
-from shared_modules.mqtt import derive_related_topic, publish_message
+from shared_modules.mqtt import derive_related_topic
 
 # Keep the Flask entry point focused on web/state orchestration. Project-specific
 # implementations live under homelab-panel/modules while this entry point remains
@@ -301,7 +301,6 @@ MQTT_RUNTIME = PanelMqttRuntime(
     mqtt_config=lambda: MQTT_CONFIG,
     ha_config=lambda: HOME_ASSISTANT_CONFIG,
     remote_devices=lambda: REMOTE_DEVICES,
-    publish_message=lambda *args, **kwargs: publish_message(*args, **kwargs),
     home_assistant_enabled=lambda: home_assistant_enabled(),
     publish_home_assistant_snapshot=lambda: publish_home_assistant_snapshot(),
     record_device_event=lambda *args, **kwargs: record_device_event(*args, **kwargs),

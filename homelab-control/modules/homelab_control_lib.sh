@@ -86,7 +86,7 @@ mqtt_pub() {
 
     # Keep payload bytes on stdin and credentials in the existing JSON config.
     # The shared Python helper owns all MQTT transport and reports failure via rc.
-    printf '%s' "${payload}" | python3 "${BASE_DIR}/../homelab_mqtt.py" \
+    printf '%s' "${payload}" | python3 "${BASE_DIR}/../shared_modules/mqtt.py" \
         --config "${CONFIG_FILE}" --topic "${topic}" --qos 1 --retain > /dev/null
 }
 

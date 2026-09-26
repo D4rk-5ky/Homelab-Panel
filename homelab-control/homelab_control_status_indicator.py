@@ -14,12 +14,7 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from shared_modules.mqtt import (
-    connect_client,
-    create_client,
-    derive_related_topic as shared_derive_related_topic,
-    publish_client_message,
-)
+from shared_modules.mqtt import MqttClient, derive_related_topic
 STATE_DIR = os.path.join(BASE_DIR, "state")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")
@@ -43,11 +38,6 @@ def load_config() -> dict:
 
 CONFIG = load_config()
 
-MQTT_HOST = CONFIG["mqtt"]["host"]
-MQTT_PORT = CONFIG["mqtt"]["port"]
-MQTT_USER = CONFIG["mqtt"]["user"]
-MQTT_PASS = CONFIG["mqtt"]["pass"]
-MQTT_KEEPALIVE = CONFIG["mqtt"]["keepalive"]
 
 CLIENT_ID = CONFIG["client_ids"]["status"]
 HOSTNAME = socket.gethostname()
@@ -61,15 +51,15 @@ TOPIC_LAST_RESULT = CONFIG["topics"]["status_last_result"]
 TOPIC_LAST_MESSAGE = CONFIG["topics"]["status_last_message"]
 TOPIC_LAST_UPDATED = CONFIG["topics"]["status_last_updated"]
 
-def derive_related_topic(explicit_key: str, suffix: str) -> str:
-    return shared_derive_related_topic(
-        CONFIG["topics"], explicit_key, suffix, base_key="status_last_message"
-    )
-
-
-TOPIC_HISTORY = derive_related_topic("status_history", "/history")
-TOPIC_BOOT_ID = derive_related_topic("status_boot_id", "/boot_id")
-TOPIC_BOOT_TIME = derive_related_topic("status_boot_time", "/boot_time")
+TOPIC_HISTORY = derive_related_topic(
+    CONFIG["topics"], "status_history", "/history", base_key="status_last_message"
+)
+TOPIC_BOOT_ID = derive_related_topic(
+    CONFIG["topics"], "status_boot_id", "/boot_id", base_key="status_last_message"
+)
+TOPIC_BOOT_TIME = derive_related_topic(
+    CONFIG["topics"], "status_boot_time", "/boot_time", base_key="status_last_message"
+)
 
 PUBLISH_UPTIME_EVERY = CONFIG["timing"]["publish_uptime_every"]
 HISTORY_MAX_ENTRIES = max(1, int(CONFIG["timing"].get("history_max_entries", 100)))
@@ -292,7 +282,7 @@ def publish(topic: str, payload: str, retain: bool = True, qos: int = 1) -> None
     global mqtt_client
     if mqtt_client is None or not topic:
         return
-    publish_client_message(mqtt_client, topic, payload, qos=qos, retain=retain)
+    mqtt_client.publish(topic, payload, qos=qos, retain=retain)
 
 
 def publish_history() -> None:
@@ -309,7 +299,7 @@ def publish_command_status() -> None:
     publish(TOPIC_LAST_UPDATED, read_text_file(LAST_UPDATED_FILE, ""), retain=True, qos=1)
 
 
-def on_connect(*args):
+def on_connect() -> None:
     publish(TOPIC_POWER, "online", retain=True, qos=1)
     publish(TOPIC_ACTION, read_action(), retain=True, qos=1)
     publish(TOPIC_INFO_HOSTNAME, HOSTNAME, retain=True, qos=1)
@@ -318,10 +308,6 @@ def on_connect(*args):
     publish(TOPIC_BOOT_TIME, get_boot_time_iso(), retain=True, qos=1)
     publish_command_status()
     publish_history()
-
-
-def on_disconnect(*args):
-    pass
 
 
 def uptime_loop():
@@ -378,22 +364,13 @@ def main() -> int:
     if not os.path.exists(LAST_UPDATED_FILE):
         write_text_file(LAST_UPDATED_FILE, datetime.now().isoformat(timespec="seconds"))
 
-    client = create_client(
+    mqtt_client = MqttClient(
         CONFIG["mqtt"],
         client_id=CLIENT_ID,
         will={"topic": TOPIC_POWER, "payload": "offline", "qos": 1, "retain": True},
         on_connect=on_connect,
-        on_disconnect=on_disconnect,
     )
-
-    mqtt_client = client
-    connect_client(
-        client,
-        host=MQTT_HOST,
-        port=MQTT_PORT,
-        keepalive=MQTT_KEEPALIVE,
-        mode="thread",
-    )
+    mqtt_client.start(mode="thread")
 
     threading.Thread(target=uptime_loop, daemon=True).start()
     threading.Thread(target=action_sync_loop, daemon=True).start()
@@ -414,11 +391,7 @@ def main() -> int:
             time.sleep(0.4)
         except Exception:
             pass
-        try:
-            client.loop_stop()
-            client.disconnect()
-        except Exception:
-            pass
+        mqtt_client.stop()
 
     return 0
 

@@ -1,155 +1,156 @@
-# Homelab Panel 0.0.19 — validation
+# Homelab Panel 0.0.20 — validation
 
 ## Result and scope
 
-Created **0.0.19** from the packaged **0.0.18** baseline. This release consolidates genuinely shared MQTT transport code into one root `shared_modules/mqtt.py` module without moving component-specific application logic across component boundaries.
+Created **0.0.20** from the packaged **0.0.19** baseline after auditing every production MQTT call path in the panel, Homelab Control agents, shell bridge, and shared publisher.
 
-The intended dependency direction is now:
+The objective was not merely to move MQTT code. Generic MQTT transport now has one implementation/API in root `shared_modules/mqtt.py`, while each component keeps only behavior that belongs to that component.
 
-- `homelab-panel` → `shared_modules.mqtt` for generic MQTT transport;
-- `homelab-control` → `shared_modules.mqtt` for generic MQTT transport;
-- neither component imports modules from the other component.
+Dependency direction is deliberately one-way:
 
-`shared_modules/` contains only MQTT in this release because no other cross-component category was large/duplicated enough to justify another shared module.
+- `homelab-panel` → `shared_modules.mqtt`;
+- `homelab-control` → `shared_modules.mqtt`;
+- `homelab-panel` does not import Homelab Control modules;
+- `homelab-control` does not import panel modules.
 
-## Shared MQTT consolidation
+## MQTT consolidation
 
-`shared_modules/mqtt.py` now owns the common MQTT implementation:
+`shared_modules/mqtt.py` is now the only generic MQTT implementation and the only production file importing Paho. Its shared API owns:
 
-- Paho MQTT v3.1.1 client construction and Callback API compatibility;
-- optional reconnect delay policy;
+- Paho MQTT 3.1.1 client construction;
+- Paho callback-API compatibility;
 - username/password authentication;
-- Last Will configuration;
-- caller-supplied connect/disconnect/message callbacks;
-- blocking, threaded, asynchronous-threaded, and connect-only loop modes;
-- direct publish return handling and optional publish wait;
-- UTF-8 MQTT payload decoding;
-- related status-topic derivation from `/last_message`;
-- bounded disposable one-shot publication with no reconnect/retry;
-- one-shot CLI argument/config/stdin handling.
+- optional Last Will configuration;
+- reconnect-delay policy;
+- static or callable subscription lists;
+- connect and network-loop modes;
+- normalized decoded message callbacks as `(topic, payload, retain, qos)`;
+- long-running publication return handling;
+- clean stop/disconnect behavior;
+- related sibling-topic derivation;
+- bounded one-shot publication with no automatic reconnect/retry;
+- one-shot CLI config/stdin/flag handling.
 
-The bounded worker launches `shared_modules/mqtt.py` itself, so there is one transport implementation. Root `homelab_mqtt.py` is now only a 10-line executable/backward-import adapter.
+Both long-running Homelab Control programs and the panel use the same `MqttClient(...).start()` / `.publish()` interface.
 
-Component-specific code remains component-specific:
+`homelab-panel/modules/panel_mqtt.py` remains because it contains panel-specific behavior rather than a second transport implementation. It owns the panel receive cache, panel topic selection, diagnostics, retained panel-control rejection, HA birth handling, status/job/boot routing, and panel connect/disconnect event hooks. It does not construct a Paho client.
 
-- `homelab-panel/modules/panel_mqtt.py` still owns panel receive cache, subscriptions, diagnostics, HA birth handling, panel-control dispatch and panel event callbacks;
-- `homelab-control/homelab_control_command_listener.py` still owns command validation, queueing, scripts and jobs;
-- `homelab-control/homelab_control_status_indicator.py` still owns local status/history/uptime/boot state publication;
-- HA discovery, web routes, WoL/action safety and persistence were not moved into `shared_modules`.
+The root `homelab_mqtt.py` compatibility wrapper from 0.0.19 was removed. Shell and standalone one-shot callers now execute `shared_modules/mqtt.py` directly, so there is no second MQTT executable implementation surface.
 
-## Independent execution/path checks
+## Codebase reduction
 
-Temporary active configs copied from the tracked examples were used only during these checks and removed afterwards. Dependency stubs were used so no broker/device was contacted.
+Production Python/shell source was counted with the same method on both releases, excluding tests:
 
-From `/tmp` rather than the project directory:
+- 0.0.19: **4,084 lines**;
+- 0.0.20: **4,018 lines**;
+- net reduction: **66 lines**.
 
-- `homelab-panel/app.py` successfully imported its component-local configs/modules and root `shared_modules.mqtt`;
-- `homelab_control_command_listener.py` successfully imported its component-local config and root shared MQTT module;
-- `homelab_control_status_indicator.py` successfully imported its component-local config and root shared MQTT module;
-- the three programs do not import each other's component modules;
-- `homelab_mqtt.py --help` ran from outside the project directory through the shared CLI implementation.
+The 0.0.19 project had 35 tracked release files. 0.0.20 has 34; the only intentionally removed path is `homelab_mqtt.py`. No replacement wrapper was added.
 
-This means the programs remain independent processes as long as the project layout keeps the root `shared_modules/` directory available. A component may run without the other component running.
+## Behavior and safety preserved
 
-## Static/configuration checks
+The refactor does not intentionally change:
 
-- All **15 Python files** parse successfully with Python AST compilation without requiring imports.
-- All **6 shell scripts/modules** pass `bash -n`.
-- All **4 embedded Python heredocs** in `homelab-control/modules/homelab_control_lib.sh` compile.
-- `homelab-control/configs/config.example.json` parses as JSON.
-- All **4 Jinja templates** parse successfully.
-- All **3 systemd service examples** retain `[Unit]`, `[Service]`, and `ExecStart=`.
-- Production Paho usage was searched: only `shared_modules/mqtt.py` imports `paho.mqtt.client` or constructs `mqtt.Client`; component production code no longer does so directly.
-- `commented_code_map.md` covers all **201 production Python/shell function definitions** in this release, including nested functions.
-- No configuration key/value was added or removed; the tracked config examples are unchanged from 0.0.18.
+- MQTT broker configuration keys;
+- MQTT topic names or payload formats;
+- configured QoS/retain behavior;
+- bounded one-shot command timeout/no-retry semantics;
+- command allow-lists;
+- local script path/executable guards;
+- Home Assistant discovery IDs/topics;
+- web routes;
+- `$TITLE` confirmation behavior;
+- power/WoL behavior;
+- job/state/history formats;
+- component-local config paths.
 
-## MQTT regression checks
+All three tracked config examples are byte-identical to 0.0.19:
 
-The real installed Flask/Paho test suite cannot run in this sandbox because both Flask and `paho-mqtt` are absent. The normal command was attempted:
+- `homelab-panel/configs/config.example.py`;
+- `homelab-panel/configs/devices.example.py`;
+- `homelab-control/configs/config.example.json`.
+
+## Static and structure checks
+
+Passed:
+
+- all **14 Python files** parse successfully with Python AST compilation;
+- all **6 shell files** pass `bash -n`;
+- all **4 embedded Python heredocs** in the Homelab Control shell module compile;
+- the Homelab Control JSON example parses successfully;
+- all **4 Jinja templates** parse successfully;
+- all **3 systemd unit examples** retain `[Unit]`, `[Service]`, and `ExecStart=` structure;
+- production Paho search finds only `shared_modules/mqtt.py` importing `paho.mqtt.client` / constructing `mqtt.Client`;
+- all **210 production Python/shell function definitions** are represented in `commented_code_map.md`;
+- all **249 Python/shell function definitions including tests** are represented in `commented_code_map.md`.
+
+## Shared MQTT regression tests
+
+The isolated Paho compatibility fixture was used only for offline tests; it is not part of the release.
+
+The focused shared publisher/client/CLI/shell suite passed **12/12**:
+
+- configured auth/port/payload/QoS/retain preservation;
+- unauthenticated default non-retained publication;
+- refused-connection handling without publish;
+- connect and publish failure propagation;
+- timeout socket close/disconnect behavior with no retry;
+- invalid input rejection before network creation;
+- modern and legacy Paho constructor compatibility;
+- shared long-running `MqttClient` auth/LWT/subscription/message/publish/disconnect API;
+- bounded parent worker and credentials kept off argv;
+- CLI config and exact stdin payload handling;
+- CLI help/config error handling;
+- real shell bridge exact-payload/failure propagation.
+
+Result:
+
+```text
+Ran 12 tests in 30.817s
+OK
+```
+
+The shared CLI `--help` was also executed from `/tmp` rather than the repository working directory using the isolated Paho compatibility fixture.
+
+## Independent component import/path checks
+
+Temporary active configs copied from the tracked examples were created only for this check and removed immediately afterwards. Dependency stubs prevented broker/device access.
+
+From `/tmp`, these imported successfully:
+
+- `homelab-control/homelab_control_command_listener.py`;
+- `homelab-control/homelab_control_status_indicator.py`;
+- `homelab-panel/modules/panel_mqtt.py`.
+
+This verifies that the shared root package can be resolved independently of the shell working directory and that neither component needs to import the other component's application modules.
+
+## Full test-suite limitation
+
+The normal command was attempted without stubs:
 
 ```bash
 python3 -B -m unittest discover -s tests -v
 ```
 
-Discovery stops with `ModuleNotFoundError: No module named 'paho'` before the tests execute.
+It cannot execute in this sandbox because the real `paho-mqtt` package is not installed; discovery stops while importing both test modules with `ModuleNotFoundError: No module named 'paho'`. Flask is also not installed in this environment, so the real Flask-based panel tests cannot be rerun here either.
 
-Using an isolated Paho compatibility stub, **10 focused publisher/CLI regression tests passed**:
+Therefore the isolated 12-test MQTT regression result is reported separately and is **not** represented as a full real-dependency suite pass.
 
-- configured auth/port/payload/QoS/retain preservation;
-- unauthenticated default non-retained command publication;
-- broker rejection handling;
-- connect and publish failures;
-- timeout socket shutdown before disconnect with no retry;
-- invalid topic/QoS/timeout rejection before connection;
-- modern/legacy Paho constructor compatibility;
-- parent process timeout and credentials kept off argv;
-- CLI config/stdin handling;
-- CLI help/config-error behavior.
+## Not exercised against live infrastructure
 
-The real shell bridge regression test also passed separately under the isolated interpreter shim. It verified exact stdin payload transfer, config path/QoS/retain arguments, success/failure exit propagation, and empty-topic no-op behavior.
+No production MQTT broker, Home Assistant instance, remote Homelab Control host, Wake-on-LAN target, shutdown/reboot action, or live systemd service was contacted or changed during validation.
 
-A separate shared-MQTT stub check verified client ID/callback API/auth/Last Will/reconnect setup, async-thread connection mode, payload decoding, and related-topic derivation.
+## Packaging checks
 
-These isolated checks verify refactor wiring and behavior but do not replace a real broker/Paho integration test.
+The final archive was checked for:
 
-## Behavior/safety preservation
+- expected 0.0.19 → 0.0.20 manifest changes;
+- no unexpected baseline file removal;
+- no active private config files;
+- no `__pycache__`, `.pyc`, `.pyo`, runtime state/logs, build cache, or temporary files;
+- no duplicate ZIP member names;
+- ZIP integrity;
+- extracted-file SHA-256 equality with the release tree;
+- Unix permission equality with the release tree.
 
-The refactor does not intentionally change:
-
-- MQTT topics or payload formats;
-- command QoS/retain configuration;
-- Home Assistant discovery/entity IDs;
-- remote/local command allow-lists;
-- browser routes or button labels/confirmations;
-- `$TITLE` expansion;
-- Wake-on-LAN behavior;
-- shutdown/reboot confirmation semantics;
-- status/history/job persistence formats;
-- component-local config locations;
-- local script path-containment/executable checks;
-- retained panel-control rejection;
-- one-shot command no-reconnect/no-automatic-retry behavior.
-
-## Baseline manifest comparison
-
-The 0.0.18 baseline contains **33 files**. Before packaging, 0.0.19 contains **35 source files**.
-
-Added:
-
-- `shared_modules/__init__.py`
-- `shared_modules/mqtt.py`
-
-No baseline file path was removed.
-
-Expected modified baseline paths:
-
-- `README.md`
-- `VALIDATION.md`
-- `VERSION`
-- `VERSIONING.md`
-- `commented_code_map.md`
-- `homelab-control/homelab_control_command_listener.py`
-- `homelab-control/homelab_control_status_indicator.py`
-- `homelab-panel/app.py`
-- `homelab-panel/modules/panel_mqtt.py`
-- `homelab_mqtt.py`
-- `tests/test_mqtt_publish.py`
-
-All three tracked configuration examples remain byte-for-byte unchanged from 0.0.18.
-
-## Packaging requirements
-
-Before packaging, generated `__pycache__`/`.pyc` files and temporary active configs are removed. The final ZIP must be checked for:
-
-- exactly the expected **35** source files;
-- no duplicate ZIP entries;
-- successful archive integrity testing;
-- extracted-file SHA-256 hashes matching the release tree;
-- executable/non-executable permissions matching the release tree;
-- no active local config files;
-- no `__pycache__`, `.pyc`, `.pyo`, build cache, temporary files, runtime logs, or runtime state.
-
-## Limits
-
-- Full Flask/Paho unit tests and real MQTT wire tests require the missing runtime dependencies and were not available in this sandbox.
-- No production MQTT broker, Home Assistant instance, remote homelab device, Wake-on-LAN target, shutdown/reboot operation, or privileged systemd action was contacted/executed.
+The final archive SHA-256 is recorded in the release response after packaging.

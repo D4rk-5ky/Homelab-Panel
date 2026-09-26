@@ -14,12 +14,7 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from shared_modules.mqtt import (
-    connect_client,
-    create_client,
-    decode_message_payload,
-    publish_client_message,
-)
+from shared_modules.mqtt import MqttClient, derive_related_topic
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")
 STATE_DIR = os.path.join(BASE_DIR, "state")
@@ -33,11 +28,6 @@ def load_config() -> dict:
 
 CONFIG = load_config()
 
-MQTT_HOST = CONFIG["mqtt"]["host"]
-MQTT_PORT = CONFIG["mqtt"]["port"]
-MQTT_USER = CONFIG["mqtt"]["user"]
-MQTT_PASS = CONFIG["mqtt"]["pass"]
-MQTT_KEEPALIVE = CONFIG["mqtt"]["keepalive"]
 
 CLIENT_ID = CONFIG["client_ids"]["command_listener"]
 TOPIC_CONTROL = CONFIG["topics"]["control_power"]
@@ -56,19 +46,12 @@ JOB_SEMAPHORE = threading.Semaphore(MAX_PARALLEL_JOBS)
 MQTT_CLIENT = None
 
 
-def derive_jobs_topic() -> str:
-    explicit = str(CONFIG.get("topics", {}).get("status_jobs", "")).strip()
-    if explicit:
-        return explicit
-
-    last_message_topic = str(CONFIG.get("topics", {}).get("status_last_message", "")).strip()
-    suffix = "/last_message"
-    if last_message_topic.endswith(suffix):
-        return last_message_topic[:-len(suffix)] + "/jobs"
-    return ""
-
-
-TOPIC_JOBS = derive_jobs_topic()
+TOPIC_JOBS = derive_related_topic(
+    CONFIG.get("topics", {}),
+    "status_jobs",
+    "/jobs",
+    base_key="status_last_message",
+)
 
 
 def timestamp_now() -> str:
@@ -165,9 +148,7 @@ def publish_jobs() -> None:
     if MQTT_CLIENT is None or not TOPIC_JOBS:
         return
     payload = json.dumps(get_jobs_snapshot(), ensure_ascii=False, separators=(",", ":"))
-    publish_client_message(
-        MQTT_CLIENT, TOPIC_JOBS, payload, qos=1, retain=True, wait_timeout=5
-    )
+    MQTT_CLIENT.publish(TOPIC_JOBS, payload, qos=1, retain=True, wait_timeout=5)
 
 
 def recover_interrupted_jobs() -> None:
@@ -354,15 +335,12 @@ def parse_control_payload(payload: str) -> tuple[str, str, str]:
     )
 
 
-def on_connect(*args):
-    client = args[0]
-    client.subscribe(TOPIC_CONTROL, qos=1)
+def on_connect() -> None:
     print(f"Subscribed to {TOPIC_CONTROL}", flush=True)
     publish_jobs()
 
 
-def on_message(client, userdata, msg):
-    payload = decode_message_payload(msg)
+def on_message(topic: str, payload: str, retain: bool, qos: int) -> None:
     command, requested_job_id, source = parse_control_payload(payload)
     print(f"Received command: {command}", flush=True)
 
@@ -379,17 +357,14 @@ def main() -> int:
     global MQTT_CLIENT
     os.makedirs(STATE_DIR, exist_ok=True)
     recover_interrupted_jobs()
-    client = create_client(
-        CONFIG["mqtt"], client_id=CLIENT_ID, on_connect=on_connect, on_message=on_message
+    MQTT_CLIENT = MqttClient(
+        CONFIG["mqtt"],
+        client_id=CLIENT_ID,
+        subscriptions=[(TOPIC_CONTROL, 1)],
+        on_connect=on_connect,
+        on_message=on_message,
     )
-    MQTT_CLIENT = client
-    connect_client(
-        client,
-        host=MQTT_HOST,
-        port=MQTT_PORT,
-        keepalive=MQTT_KEEPALIVE,
-        mode="forever",
-    )
+    MQTT_CLIENT.start(mode="forever")
     return 0
 
 

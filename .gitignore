@@ -1,64 +1,24 @@
-# ============================================================
-# HOMELAB PANEL - PRIVATE ACTIVE CONFIGS
-# ============================================================
-
+# HomeLab panel active configs
 homelab-panel/configs/config.py
 homelab-panel/configs/devices.py
 
-# Legacy pre-0.0.18 locations.
-# Keep ignored in case old private configs are still present locally.
-homelab-panel/config.py
-homelab-panel/devices.py
-
-
-# ============================================================
-# HOMELAB CONTROL - PRIVATE ACTIVE CONFIG
-# ============================================================
-
+# HomeLab Control active config
 homelab-control/configs/config.json
 
-# Legacy pre-0.0.18 location.
-homelab-control/config.json
-
-
-# ============================================================
-# RUNTIME STATE / LOGS
-# ============================================================
-
+# Runtime state/logs
 homelab-panel/state/
 homelab-control/state/
 homelab-control/logs/
 
-
-# ============================================================
-# PYTHON ENVIRONMENT / CACHE
-# ============================================================
-
+# Python environment / cache
 .venv/
 __pycache__/
 *.pyc
 *.pyo
 
-
-# ============================================================
 # macOS
-# ============================================================
-
 .DS_Store
 
+# Shared power scripts under scripts/ are tracked project source.
+# Do not add scripts/ to this ignore file.
 
-# ============================================================
-# IMPORTANT
-# ============================================================
-
-# Example configs are tracked project source:
-# homelab-panel/configs/config.example.py
-# homelab-panel/configs/devices.example.py
-# homelab-control/configs/config.example.json
-#
-# shared_modules/ is tracked project source.
-# homelab-panel/modules/ is tracked project source.
-# homelab-control/modules/ is tracked project source.
-# scripts/ is tracked project source.
-#
-# Do not add those directories to this ignore file.

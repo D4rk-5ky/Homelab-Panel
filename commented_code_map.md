@@ -138,23 +138,28 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 ## `homelab-panel/modules/panel_mqtt.py`
 
-`PanelMqttRuntime` owns only the panel-specific reconnecting MQTT state, subscriptions, dispatch, diagnostics, and cache. Generic Paho construction/auth/connect/publish behavior and one-shot transport live once in root `shared_modules/mqtt.py`.
+`PanelMqttRuntime` owns only panel-specific MQTT topic selection, cache, diagnostics, routing, HA birth handling, and panel event hooks. It never constructs a Paho client or performs broker transport directly; those mechanics live in root `shared_modules/mqtt.py`.
 
 | Method | What / why |
 |---|---|
-| `PanelMqttRuntime.__init__()` | Stores config/dispatch callbacks and creates the receive cache, subscription set, connection metadata, lock and client reference. |
-| `PanelMqttRuntime.publish_command()` | Calls the shared disposable Paho publisher with current panel QoS/retain settings; command failure is never queued for later reconnect. |
-| `PanelMqttRuntime.set_state()` | Stores latest payload, time, retained flag and QoS under lock and returns the previous payload for transition handling. |
-| `PanelMqttRuntime.set_connected()` | Updates connected state plus connect/disconnect timestamps/reason and mirrors it to the app compatibility flag. |
+| `PanelMqttRuntime.__init__()` | Stores dynamic panel providers/callbacks plus panel receive cache, subscription set and diagnostics metadata. The actual long-running transport object is created lazily from the shared module. |
+| `PanelMqttRuntime.publish_command()` | Uses shared `publish_message()` with the panel's configured QoS/retain values for bounded no-retry command sends. |
+| `PanelMqttRuntime.set_state()` | Stores latest decoded payload, receive time, retain flag and QoS under lock and returns the previous payload for transition handling. |
+| `PanelMqttRuntime.set_connected()` | Mirrors shared transport connectivity into panel diagnostics/timestamps and the legacy app-level connected flag. |
 | `PanelMqttRuntime.get_state()` | Returns an isolated copy of one cached topic record. |
-| `PanelMqttRuntime.get_payload_and_age()` | Returns stripped cached payload and receive age for TTL/status evaluation. |
-| `PanelMqttRuntime.publish_direct()` | Publishes HA/telemetry via the connected long-running client and reports immediate Paho publication failure. |
-| `PanelMqttRuntime._related_topics()` | Applies the app-provided topic helper functions for hostname/uptime/history/jobs/boot metadata without duplicating backwards-compatible derivation rules. |
-| `PanelMqttRuntime.build_diagnostics()` | Builds connection/subscription/cache and per-device expected-topic data for `/mqtt-diagnostics`. |
-| `PanelMqttRuntime.on_connect()` | Marks connected, rebuilds/subscribes the topic set, republishes HA snapshot and records connect/reconnect events. |
-| `PanelMqttRuntime.on_disconnect()` | Marks disconnected with reason and records per-device broker disconnect events. |
-| `PanelMqttRuntime.on_message()` | Caches messages, rejects retained panel controls, dispatches fresh controls on a worker, handles HA birth, then forwards status/job/boot transitions to app callbacks. |
-| `PanelMqttRuntime.start()` | Starts the app status monitor, supplies panel callbacks/optional HA Last Will to the shared MQTT client factory, then starts the shared asynchronous-threaded connection mode. |
+| `PanelMqttRuntime.get_payload_and_age()` | Returns one cached payload and receive age for panel TTL/status evaluation. |
+| `PanelMqttRuntime.publish_direct()` | Sends HA/telemetry through the shared long-running `MqttClient.publish()` path; no Paho publish handling is duplicated here. |
+| `PanelMqttRuntime._related_topics()` | Applies app-provided compatible topic helpers for hostname/uptime/history/jobs/boot metadata. |
+| `PanelMqttRuntime.subscription_topics()` | Builds the panel-specific topic set from devices, panel control and optional HA birth topic; shared `MqttClient` performs the actual subscribe calls. |
+| `PanelMqttRuntime.build_diagnostics()` | Builds `/mqtt-diagnostics` rows from panel cache/subscription metadata and expected device topics. |
+| `PanelMqttRuntime._connected()` | Runs only panel work after the shared client has connected/subscribed: update diagnostics, publish HA snapshot and record connect/reconnect history. |
+| `PanelMqttRuntime._disconnected()` | Runs only panel disconnect work: update diagnostics and append per-device broker-disconnect history. |
+| `PanelMqttRuntime._message()` | Handles the shared decoded callback shape `(topic, payload, retain, qos)`: cache, retained-control rejection, worker dispatch, HA birth, status/jobs/boot routing. |
+| `PanelMqttRuntime._ensure_transport()` | Creates one shared `MqttClient` with current panel settings, subscriptions, callbacks, reconnect policy and optional HA Last Will. |
+| `PanelMqttRuntime.on_connect()` | Compatibility delegate that sends a Paho-style callback into `MqttClient.handle_connect()`; Paho details remain implemented only in the shared module. |
+| `PanelMqttRuntime.on_disconnect()` | Compatibility delegate to shared disconnect handling. |
+| `PanelMqttRuntime.on_message()` | Compatibility delegate to shared Paho message decoding/dispatch. |
+| `PanelMqttRuntime.start()` | Starts the panel monitor and the shared client in asynchronous-threaded reconnect mode. |
 
 ## Flask routes
 
@@ -179,24 +184,23 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 | Function | What / why |
 |---|---|
-| `load_config()` | Loads `configs/config.json` relative to the remote-agent entry point before constants are derived; remote behavior is explicit per host and independent of the shell working directory. |
-| `derive_jobs_topic()` | Uses explicit status_jobs or derives sibling /jobs topic; old configs can upgrade without immediate edits. |
-| `timestamp_now()` | Returns millisecond ISO timestamp; quick queued/running transitions remain distinguishable. |
-| `normalize_command_spec()` | Normalizes legacy string or object command entries into one structure; keeps compatibility while enabling category/timeout metadata. |
-| `resolve_script_path()` | Special-resolves the four bundled shutdown/reboot filenames from `PROJECT_ROOT/scripts`; non-bundled custom filenames keep the prior project-root lookup for compatibility. MQTT still selects only an allow-listed command ID, never an arbitrary path. |
+| `load_config()` | Loads component-local `configs/config.json` relative to the entry point, independent of shell working directory. |
+| `timestamp_now()` | Returns millisecond ISO timestamps so fast queued/running transitions remain distinguishable. |
+| `normalize_command_spec()` | Normalizes legacy string/object allow-list entries into one script/label/category/timeout structure. |
+| `resolve_script_path()` | Resolves only allow-listed filenames; bundled power scripts come from root `scripts/`, custom filenames keep project-root lookup. MQTT never supplies an arbitrary path. |
 | `load_jobs_unlocked()` | Loads persisted remote jobs with malformed-file fallback. |
-| `save_jobs_unlocked()` | Caps and atomically persists remote job snapshots. |
-| `update_job()` | Creates/updates one remote job by ID under lock. |
-| `get_jobs_snapshot()` | Returns a safe copy of persisted jobs for MQTT publication. |
-| `publish_jobs()` | Publishes the complete retained jobs snapshot; panel can catch up after reconnect. |
-| `recover_interrupted_jobs()` | Converts leftover queued/running/waiting/confirming jobs to failure on listener startup; a service restart cannot leave stale jobs looking active forever. |
-| `clean_output()` | Combines and caps stdout/stderr; useful diagnostics without unbounded MQTT payloads. |
-| `run_job()` | Waits for parallel slot, runs allow-listed script with timeout, records running/success/failure/runtime and republishes snapshot. |
-| `queue_command()` | Validates command mapping, creates queued job and starts worker; MQTT callback never blocks on long scripts. |
-| `parse_control_payload()` | Accepts legacy plain command or JSON envelope with job_id/source; supports gradual agent upgrades. |
-| `on_connect()` | Subscribes control topic and republishes retained jobs on reconnect. |
-| `on_message()` | Decodes plain/JSON payloads and queues only configured command IDs; this remote callback has no retained-message rejection, so the sender must keep command retention off. |
-| `main()` | Supplies command-listener callbacks/settings to the shared MQTT client factory, then uses the shared blocking loop mode; job execution remains local to this component. |
+| `save_jobs_unlocked()` | Caps and atomically writes the remote jobs snapshot. |
+| `update_job()` | Creates/updates one remote job under lock. |
+| `get_jobs_snapshot()` | Returns a safe copy of current job records for publication. |
+| `publish_jobs()` | Publishes retained job JSON via the same shared `MqttClient.publish()` API used elsewhere. |
+| `recover_interrupted_jobs()` | Marks leftover active jobs failed on service restart so stale work never stays active forever. |
+| `clean_output()` | Combines/caps script stdout/stderr for bounded diagnostics. |
+| `run_job()` | Executes one allow-listed script under timeout/semaphore and records running/success/failure/runtime. |
+| `queue_command()` | Validates command mapping, creates the queued job and starts a daemon worker so MQTT receive never blocks. |
+| `parse_control_payload()` | Accepts legacy plain command IDs or JSON envelopes with optional `job_id`/`source`. |
+| `on_connect()` | Component-only post-connect hook: logs the already-shared subscription and republishes retained jobs. |
+| `on_message()` | Receives the common decoded `(topic, payload, retain, qos)` callback from `MqttClient` and queues only configured command IDs. Retention policy remains the sender's responsibility for this direct-agent topic. |
+| `main()` | Creates the shared `MqttClient` with the control subscription/callbacks and runs it in blocking `forever` mode; all job/script behavior stays local to this component. |
 
 ### Remote command protocol
 
@@ -206,39 +210,36 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 | Function | What / why |
 |---|---|
-| `load_config()` | Loads remote status config. |
-| `derive_related_topic()` | Gets explicit topic or derives sibling from last_message; boot topics work with older configs. |
-| `derive_history_topic()` | Gets explicit history topic or derives /history for backward compatibility. |
-| `ensure_dirs()` | Creates remote state/log directories before file writes. |
-| `read_text_file()` | Reads state text with safe default. |
-| `write_text_file()` | Atomically writes state text so sync loops do not see partial values. |
-| `read_action()` | Reads current action with idle fallback. |
+| `load_config()` | Loads component-local remote status configuration. |
+| `ensure_dirs()` | Creates runtime state/log directories before writes. |
+| `read_text_file()` | Reads state text with a safe default. |
+| `write_text_file()` | Atomically writes state text so sync loops never observe partial data. |
+| `read_action()` | Reads current action with `idle` fallback. |
 | `write_action()` | Writes current action atomically. |
-| `get_uptime_seconds()` | Reads Linux /proc/uptime for retained uptime telemetry. |
-| `get_current_boot_id()` | Reads Linux boot UUID used to distinguish reboot from service restart. |
+| `get_uptime_seconds()` | Reads Linux `/proc/uptime` for retained uptime telemetry. |
+| `get_current_boot_id()` | Reads Linux boot UUID to distinguish reboot from service restart. |
 | `get_boot_time_epoch()` | Computes approximate boot epoch from uptime. |
 | `get_boot_time_iso()` | Formats boot epoch for MQTT/UI metadata. |
-| `parse_timestamp()` | Parses stored ISO status timestamp for migration/boot comparison. |
-| `load_history()` | Loads remote command/event history with malformed-file fallback. |
+| `parse_timestamp()` | Parses stored ISO timestamps for boot-migration decisions. |
+| `load_history()` | Loads remote history with malformed-file fallback. |
 | `save_history()` | Caps and atomically writes remote history. |
-| `current_command_record()` | Builds archive record from current last-command fields when meaningful. |
+| `current_command_record()` | Builds an archive record from meaningful current command fields. |
 | `history_record_signature()` | Creates dedupe identity for command records. |
 | `append_history_record()` | Appends history with optional dedupe. |
-| `archive_current_command_status()` | Archives pre-boot current status only if not already stored. |
-| `clear_current_command_status()` | Clears current command/result/message on a real new boot. |
-| `is_new_machine_boot()` | Compares saved/current boot IDs with migration fallback; service restart does not trigger cleanup. |
-| `append_boot_history()` | Adds categorized boot event with boot ID/time. |
-| `initialize_boot_state()` | Performs boot rollover archive/clear/action reset and saves current boot ID. |
-| `publish()` | Common retained/non-retained Paho publish helper. |
-| `publish_history()` | Publishes complete retained remote history JSON. |
+| `archive_current_command_status()` | Archives pre-boot current status only when it is not already stored. |
+| `clear_current_command_status()` | Clears current command/result/message after a real new boot. |
+| `is_new_machine_boot()` | Compares saved/current boot IDs with migration fallback; ordinary service restart does not trigger cleanup. |
+| `append_boot_history()` | Adds a categorized boot event with boot ID/time. |
+| `initialize_boot_state()` | Performs boot rollover archive/clear/action reset and stores current boot ID. |
+| `publish()` | Component convenience wrapper around the shared long-running `MqttClient.publish()` method. |
+| `publish_history()` | Publishes the complete retained remote history JSON. |
 | `publish_command_status()` | Publishes current command/result/message/timestamp topics. |
-| `on_connect()` | Publishes online/action/hostname/uptime/boot/current status/history after reconnect. |
-| `on_disconnect()` | Placeholder callback; LWT/clean shutdown handle power availability. |
+| `on_connect()` | Component-only post-connect hook that publishes online/action/hostname/uptime/boot/current status/history after the shared client connects. |
 | `uptime_loop()` | Periodically republishes online and uptime. |
-| `action_sync_loop()` | Republishes action only when local action file changes. |
-| `command_status_sync_loop()` | Republishes current command fields only when local state changes. |
-| `main()` | Initializes boot state, supplies status callbacks/LWT to the shared MQTT factory, starts the shared threaded loop, then owns local sync threads/signals/clean offline shutdown. |
-| `handle_signal()` *(nested in `main`)* | Sets the shared stop event for SIGTERM/SIGINT; lets the service exit through its clean offline publish/disconnect path. |
+| `action_sync_loop()` | Republishes action only when the local action file changes. |
+| `command_status_sync_loop()` | Republishes command fields only when local state changes. |
+| `main()` | Initializes boot state, creates the shared `MqttClient` with LWT, starts threaded networking plus local sync loops/signals, publishes offline on clean exit and calls shared `.stop()`. |
+| `handle_signal()` *(nested in `main`)* | Sets the shared stop event for SIGTERM/SIGINT so shutdown follows the clean offline/disconnect path. |
 
 ## Shell functions
 
@@ -340,7 +341,7 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 | `python3 app.py` | Starts Flask plus the panel MQTT/status background workers; there are no app CLI flags. |
 | `python3 homelab_control_command_listener.py` | Loads the agent allow-list and runs the MQTT command listener. |
 | `python3 homelab_control_status_indicator.py` | Starts Linux availability/boot/uptime/current-status publication; Linux `/proc` supplies uptime and boot identity. |
-| `python3 homelab_mqtt.py --config PATH --topic TOPIC --qos 1 --retain` | Publishes the stdin payload as retained telemetry through Paho. The same CLI without `--retain` can send commands. The JSON config supplies credentials without placing them in argv. |
+| `python3 shared_modules/mqtt.py --config PATH --topic TOPIC --qos 1 --retain` | Publishes the stdin payload as retained telemetry through Paho. The same CLI without `--retain` can send commands. The JSON config supplies credentials without placing them in argv. |
 | `wakeonlan -i BROADCAST MAC` | Sends a magic packet to the configured broadcast destination. |
 | `ping -c 1 -W TIMEOUT HOST` | Gets one bounded reachability sample: `-c 1` sends one probe and `-W` uses seconds on Linux or milliseconds on macOS; the caller also applies a three-second process timeout. |
 | `shutdown -h +1`, `shutdown -r +1`, `shutdown -c` | `-h` schedules shutdown/halt, `-r` schedules reboot, `+1` is one minute, and `-c` cancels either operation. The shared helper uses `sudo` only for non-root execution. |
@@ -372,7 +373,7 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 | Unit `User` / `Group`, `WorkingDirectory`, `ExecStart` | Select service identity, working directory, and Python entry point; deployment paths must match the complete installed tree. |
 | Unit `Restart`, `RestartSec`, `WantedBy` | Select restart policy/delay and boot target; the panel restarts on failure, while both agent units restart on any exit. |
 
-The README's **Command flag reference** documents the values, units, and examples for operator-facing commands. The three long-running Python applications and power scripts have no argument parser; passing `--help` to those entry points does not create a safe inspection mode. The separate `homelab_mqtt.py` publisher does support safe `--help`.
+The README's **Command flag reference** documents the values, units, and examples for operator-facing commands. The three long-running Python applications and power scripts have no argument parser; passing `--help` to those entry points does not create a safe inspection mode. The standalone `shared_modules/mqtt.py` publisher does support safe `--help`.
 
 ## `tests/test_home_assistant.py`
 
@@ -400,24 +401,29 @@ Panel tests use real Flask/Jinja with example configuration, temporary runtime f
 
 ## `shared_modules/mqtt.py`
 
-| Function | What it does / why it exists |
+This is the **only generic MQTT implementation** in production. Both `homelab-panel` and `homelab-control` use the same long-running `MqttClient` API; the same file also implements the bounded one-shot publisher and standalone CLI. No component imports Paho directly.
+
+| Function / method | What / why |
 |---|---|
-| `create_client()` | The single project-wide long-running client factory: builds Paho MQTT v3.1.1 with callback-API compatibility, optional reconnect backoff, auth, Last Will, and caller-owned callbacks. Both components use it without importing each other. |
-| `connect_client()` | Starts a configured client in the requested synchronous, threaded, asynchronous-threaded, or connect-only network-loop mode; preserves each service's previous loop semantics. |
-| `derive_related_topic()` | Resolves an explicitly configured status topic or derives a sibling from `/last_message`; replaces duplicated topic-derivation logic in panel and control status code. |
-| `decode_message_payload()` | Decodes MQTT message payloads as stripped UTF-8 with replacement for malformed bytes; panel and control listener use the same safe behavior. |
-| `publish_client_message()` | Publishes through an existing client, normalizes Paho return status, and optionally waits for local publish completion; reused by panel and both control processes. |
-| `_publish_once()` | Implements the no-reconnect disposable MQTT send used by command/status one-shot publishing, including validation, deadline processing, and transport shutdown on uncertain failure. |
-| `network_step()` (nested in `_publish_once`) | Advances the disposable client network loop only within the remaining hard deadline and turns Paho loop errors/timeouts into a failed one-shot send. |
-| `publish_message()` | Runs `_publish_once()` by launching `shared_modules/mqtt.py` itself as the worker process, so DNS/connect/send are bounded by a hard parent timeout and credentials/payload stay off argv; the root CLI wrapper is not part of transport execution. |
-| `cli_main()` | Implements the standalone MQTT CLI argument/config/stdin handling once inside the shared module; root `homelab_mqtt.py` is only an executable adapter. |
+| `MqttClient.__init__()` | Stores common broker settings, optional client ID/LWT/subscription provider/component callbacks and reconnect policy without knowing panel/control behavior. |
+| `MqttClient._reason_value()` | Normalizes Paho v1/v2 reason-code objects to integers when possible. |
+| `MqttClient._reason_text()` | Produces stable human-readable connection/disconnection reasons. |
+| `MqttClient._build_client()` | The single Paho long-running-client construction path: MQTT 3.1.1, callback API compatibility, auth, LWT, reconnect delay and shared callbacks. |
+| `MqttClient._subscription_items()` | Normalizes static/callable topic definitions into unique `(topic, qos)` subscriptions. |
+| `MqttClient._handle_connect()` / `handle_connect()` | Shared Paho connect callback: records state, subscribes configured topics once, then invokes the component's no-Paho post-connect hook. Public alias exists for compatibility/tests. |
+| `MqttClient._handle_disconnect()` / `handle_disconnect()` | Shared Paho disconnect callback: normalizes state/reason and invokes the component hook. |
+| `MqttClient._handle_message()` / `handle_message()` | Decodes Paho bytes once and invokes every component with the same `(topic, payload, retain, qos)` shape. |
+| `MqttClient.start()` | Uses the same API for blocking, threaded, async-threaded or connect-only modes; broker/port/keepalive come from component settings. |
+| `MqttClient.publish()` | Common publish path for long-running clients, including Paho immediate status and optional completion wait. |
+| `MqttClient.stop()` | Stops threaded loops when used and disconnects safely. |
+| `derive_related_topic()` | Resolves an explicit status topic or derives a sibling from `/last_message`; panel and control share one compatibility rule. |
+| `_publish_once()` | Performs one no-reconnect/no-retry send with input validation, deadline handling and hard socket shutdown when delivery becomes uncertain. |
+| `on_connect()` *(nested in `_publish_once`)* | Captures CONNACK for the bounded publisher without exposing a component callback. |
+| `network_step()` *(nested in `_publish_once`)* | Advances the disposable Paho loop only within the remaining deadline. |
+| `publish_message()` | Runs `_publish_once()` in a child invocation of this same module so DNS/connect/send are bounded by a hard parent timeout and credentials/payload remain off argv. |
+| `cli_main()` | Implements the standalone `shared_modules/mqtt.py` CLI (`--config`, `--topic`, QoS/retain/timeout and internal worker mode). |
 
-`shared_modules/mqtt.py` is intentionally the only shared Python implementation module in this release. Component-specific panel state/HA/actions and control jobs/status remain inside their own directories so the two components share infrastructure, not each other's application logic.
-
-## `homelab_mqtt.py`
-
-This root executable intentionally contains no MQTT implementation functions. It imports `cli_main` as `main` plus the one-shot publish symbols from `shared_modules/mqtt.py` for CLI use/backward import compatibility, then exits with `main()` when executed. Keeping this adapter at the root preserves existing shell/service paths while the implementation exists only once.
-
+`shared_modules/` intentionally contains no panel history/HA/actions and no control jobs/status logic. Those are application responsibilities rather than reusable transport.
 
 ## `tests/test_mqtt_publish.py`
 
@@ -434,6 +440,7 @@ Unit tests use fake clients/processes where precise failure injection is needed.
 | `test_timeout_closes_socket_before_disconnect_without_retry()` | Verifies failure cleanup order prevents disconnect from flushing a late command. |
 | `test_invalid_inputs_fail_before_connecting()` | Rejects empty/wildcard topics, invalid QoS, and nonpositive/nonfinite deadlines before client creation. |
 | `test_client_construction_supports_paho_callback_versions()` | Checks API v2 construction and an emulated older Paho constructor. |
+| `test_shared_long_running_client_api()` | Exercises the common `MqttClient` lifecycle used by panel/control: auth, LWT, connect mode, subscriptions, decoded callback shape, publish, and disconnect state. |
 | `test_parent_bounds_worker_and_keeps_credentials_off_argv()` | Checks the same interpreter, private stdin request, timeout, and handling of a killed worker. |
 | `test_panel_reuses_shared_publisher_and_config()` | Checks panel delegation, retained config semantics, and error propagation without an external command call in the panel dispatcher. |
 | `test_cli_reads_credentials_from_config_and_payload_from_stdin()` | Checks exact input forwarding, flag values, and success/failure exit codes. |

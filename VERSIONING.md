@@ -24,6 +24,20 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.20 — 2026-09-26
+
+### One shared MQTT implementation/API
+
+- Reworked the 0.0.19 shared-MQTT layer after auditing every panel/control MQTT call path. Generic long-running MQTT behavior is now exposed through one `shared_modules.mqtt.MqttClient` API used by the panel, command listener, and status indicator.
+- `MqttClient` now owns Paho client construction/callback-version compatibility, authentication, Last Will, reconnect delay, static/callable subscriptions, connection-loop mode, decoded `(topic, payload, retain, qos)` message callbacks, long-running publication result handling, and clean stop/disconnect. Production component code no longer implements those transport mechanics.
+- `homelab-panel/modules/panel_mqtt.py` now contains only panel-specific topic selection, receive cache, diagnostics, retained panel-control rejection, HA birth handling, status/job/boot dispatch, and panel connect/disconnect history hooks. Paho callbacks are delegated straight through the shared client.
+- `homelab-control/homelab_control_command_listener.py` and `homelab_control_status_indicator.py` now use the same `MqttClient(...).start()` / `.publish()` interface as the panel. Shared topic derivation also replaces their remaining duplicated sibling-topic helper logic.
+- Removed the root `homelab_mqtt.py` compatibility wrapper. The standalone one-shot CLI is now `python3 shared_modules/mqtt.py ...`, and the remote shell bridge calls that file directly. The bounded publisher already executes this same shared module as its worker.
+- `shared_modules/mqtt.py` remains the only production file that imports Paho. Neither component imports the other component's modules. A remote-agent-only deployment needs `homelab-control/`, root `shared_modules/`, and the shared `scripts/`, but not `homelab-panel/`.
+- The bounded no-reconnect/no-automatic-retry command publisher and its hard parent timeout remain intact. MQTT topics, payload formats, QoS/retain settings, Home Assistant IDs, command allow-lists, state formats, power actions, and config keys are unchanged.
+- Production Python/shell source is **4,018 lines**, down from **4,084** in 0.0.19 while consolidating the common transport behavior.
+- Updated README, code map, tests, validation, and version metadata. Version advances exactly from 0.0.19 to 0.0.20.
+
 ## 0.0.19 — 2026-09-26
 
 ### Root shared MQTT module
