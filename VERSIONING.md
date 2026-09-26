@@ -24,6 +24,112 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.10 — 2026-09-26
+
+### Shared power scripts moved to `scripts/`
+
+- Added a tracked `scripts/` directory at the project root for Homelab Panels shared shutdown/reboot helpers only.
+- Moved `shutdown_delay.sh`, `shutdown_cancel.sh`, `reboot_delay.sh`, `reboot_cancel.sh`, and `homelab_action_common.sh` from the project root into `scripts/`.
+- Kept `homelab-control/homelab_control_lib.sh` in `homelab-control/`; it belongs to the remote agent rather than the shared power-script bundle.
+- Project-specific jobs such as Watchtower/backup/Syncerate are not moved into `scripts/`; they remain owned by their own project/integration.
+
+### Path resolution
+
+- Added panel `SCRIPTS_DIR = PROJECT_ROOT/scripts`; local `LOCAL_SERVER` scripts now resolve only from that directory and reject nested/path-traversal names.
+- Added remote `SCRIPTS_DIR` plus an explicit shared-power-script allow-list. The four bundled power script names automatically resolve from `PROJECT_ROOT/scripts/`, so existing `config.json` entries such as `"script": "shutdown_delay.sh"` remain valid.
+- Preserved 0.0.9 behavior for non-bundled custom job filenames; this release does not relocate those project-specific scripts.
+- Updated `homelab_action_common.sh` for its new location: it treats its directory as `SCRIPT_DIR`, then resolves `PROJECT_ROOT` as the parent and finds `homelab-control/` from there.
+- The four action scripts continue to source `homelab_action_common.sh` relative to their own directory, so they do not depend on the shell working directory.
+
+### Git/development hygiene
+
+- Updated `.gitignore` to ignore `.venv/`, Python bytecode/cache files, and macOS `.DS_Store` in addition to the existing active-config/runtime exclusions.
+- `scripts/` is intentionally tracked source and is not ignored.
+
+### Validation performed for this release
+
+- Started from the user-provided 0.0.9 release ZIP.
+- Verified that all five shared power/helper shell files exist under `scripts/` and no duplicate copies remain at project root.
+- Verified panel local-script resolution points into `PROJECT_ROOT/scripts`.
+- Verified remote built-in power commands resolve into `PROJECT_ROOT/scripts` while non-bundled custom filenames retain the previous resolution behavior.
+- Verified `homelab_action_common.sh` resolves the correct project root and `homelab-control` directory from its new location.
+- Re-ran Python syntax/compile, shell `bash -n`, JSON, Jinja, systemd, `.gitignore`, function-map, manifest, and final ZIP cleanliness checks.
+- No real shutdown/reboot commands were executed during validation.
+
+## 0.0.9 — 2026-09-26
+
+### Optional Home Assistant MQTT Discovery
+
+- Added optional `HOME_ASSISTANT_CONFIG`; disabled by default.
+- Added MQTT Discovery entities for combined online, ping, uptime, last command, and job status.
+- Added Home Assistant buttons for Wake-on-LAN, cancel-WoL, and every configured `mqtt_controls.buttons` entry.
+- Added retained per-device JSON state topics and panel availability/LWT for Home Assistant.
+- Kept combined HA online strict: both ping and fresh MQTT-online must be true simultaneously.
+
+### Generic allow-listed remote jobs
+
+- Extended remote `commands` entries to accept either the legacy `"id": "script.sh"` form or objects containing `script`, `label`, `category`, and `timeout`.
+- Added optional JSON command envelopes carrying `command`, `job_id`, and `source`, while preserving legacy plain-text command payloads.
+- Added script-path containment validation so configured jobs cannot traverse outside the shared project root.
+- Existing dynamic `devices.py` buttons remain the panel allow-list; any added button is also exposed through Home Assistant Discovery.
+- Script result data is published through the separate remote job-status topic, not through `homelab-panel/control`.
+
+### Job lifecycle and parallel execution
+
+- Added remote job state `queued -> running -> success/failure`, including queued/start/finish timestamps, runtime, return code, and bounded stdout/stderr summary.
+- Added retained `status_jobs` snapshots and persistent remote `state/jobs.json`.
+- Added configurable `max_parallel_jobs` and `job_history_max_entries`.
+- Listener startup marks leftover active jobs as failure so interrupted work cannot remain falsely active after a service restart.
+- The command listener now starts independent worker threads so multiple allow-listed jobs/hosts can run concurrently.
+- Added a panel Job Status dashboard that combines panel-side confirmation jobs and remote job results.
+- Added optional `json_jobs=True` per device so the panel and agent can share the exact same job ID.
+
+### Event journal and transition history
+
+- Expanded panel history records with `category`, `event_type`, `severity`, job metadata, and optional duration.
+- Added an event timeline with category filters and an Errors filter while retaining the separate Command/Result/Message history sections.
+- Added panel MQTT connect/reconnect/disconnect events.
+- Added combined availability transition events and previous-state duration.
+- Added remote boot events and optional/derived boot ID and boot time topics.
+- Preserved existing boot cleanup: previous current command state remains in history, while current command/result/message is cleared on a real new Linux boot.
+
+### Expected-state and completion confirmation
+
+- Added persistent per-device expected-state tracking for starting, online, shutdown pending/offline, and rebooting.
+- Expected shutdown state is distinguished from an unexpected offline transition.
+- Added shutdown confirmation requiring both ping offline and MQTT `power=offline`.
+- Added reboot confirmation requiring an offline phase followed by both ping and MQTT online.
+- Existing `shutdown_delay` and `reboot_delay` buttons get confirmation automatically even when older active `devices.py` files do not contain the new `confirmation` field.
+
+### Wake-on-LAN retry/cancel
+
+- Added optional per-device WoL retry interval/max attempts and MQTT-online confirmation timeout.
+- WoL now records each attempt and can confirm completion with ping followed by MQTT.
+- Added a cancel button on the device status card that is shown only while a WoL job is active.
+- Added `cancel_wol` as a panel-control action and Home Assistant button.
+
+### MQTT diagnostics
+
+- Added `/mqtt-diagnostics` showing broker/client state, subscriptions, expected topics by device, latest payload, receive timestamp, age, retained flag, and QoS.
+- Added subscriptions/display support for hostname, uptime, jobs, boot ID, and boot time topics, with sibling-topic derivation for older active device configs.
+- Diagnostics is protected by the same web-login/token guard as all other application pages.
+
+### Configuration and compatibility
+
+- Added `STATUS_MONITOR_INTERVAL_SECONDS`, `PANEL_JOB_MAX_ENTRIES`, and optional Home Assistant settings to `config.example.py`.
+- Added jobs/boot topics, job limits, parallel-job limit, and object-style command examples to remote `config.example.json`.
+- Added WoL retry, confirmation, expected-state, jobs/boot/uptime/hostname topics, `json_jobs`, and a generic Watchtower example to `devices.example.py`.
+- Older active configs remain valid through defaults/topic derivation and legacy command formats.
+
+### Validation performed for this release
+
+- Re-inspected the full 0.0.8 package before changes.
+- Python compile, shell `bash -n`, JSON parse, Jinja parse, and systemd unit verification.
+- Offline panel tests for arbitrary dynamic commands, HA Discovery generation/disabled mode, remote job correlation, independent ping/strict combined online, expected-state display, diagnostics inventory, and conditional WoL cancellation.
+- Remote listener tests for legacy/plain JSON payload compatibility, parallel script execution, success lifecycle, legacy command mappings, and path-traversal rejection.
+- Remote status tests for derived boot/history topics and true-boot archive/clear/boot-event behavior.
+- Live Home Assistant, live MQTT broker, real Wake-on-LAN, shutdown, reboot, and production scripts were not executed in the release environment.
+
 ## 0.0.8 — 2026-09-25
 
 ### Independent ping and MQTT status

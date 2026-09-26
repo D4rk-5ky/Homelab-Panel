@@ -1,13 +1,27 @@
 # HomeLab panel
-
-config*
-devices*
-
-! config.example.py
-! devices.example.py
+homelab-panel/config*
+homelab-panel/devices*
+!homelab-panel/config.example.py
+!homelab-panel/devices.example.py
 
 # HomeLab Control
+homelab-control/config*
+!homelab-control/config.example.json
 
-config*
+# Runtime state/logs
+homelab-panel/state/
+homelab-control/state/
+homelab-control/logs/
 
-! config.example.json
+# Python environment / cache
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Shared power scripts under scripts/ are tracked project source.
+# Do not add scripts/ to this ignore file.
+

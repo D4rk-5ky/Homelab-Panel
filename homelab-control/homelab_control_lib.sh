@@ -153,6 +153,16 @@ with open(lock_file, "a+", encoding="utf-8") as lock:
     if not isinstance(history, list):
         history = []
 
+    command_lower = command.lower()
+    if "shutdown" in command_lower or "reboot" in command_lower:
+        category = "power"
+    elif "backup" in command_lower or "sync" in command_lower:
+        category = "backup"
+    elif "watchtower" in command_lower or "update" in command_lower:
+        category = "maintenance"
+    else:
+        category = "command"
+
     history.append({
         "timestamp": timestamp,
         "archived_at": timestamp,
@@ -160,6 +170,9 @@ with open(lock_file, "a+", encoding="utf-8") as lock:
         "result": result,
         "message": message,
         "source": "Remote enhed",
+        "category": category,
+        "event_type": "command_status",
+        "severity": "error" if result.lower() == "failure" else "info",
     })
     history = history[-max_entries:]
 

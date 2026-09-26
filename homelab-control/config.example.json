@@ -1,0 +1,66 @@
+{
+  "mqtt": {
+    "host": "Your.IP.Or.HostName",
+    "port": 1883,
+    "user": "",
+    "pass": "",
+    "keepalive": 30
+  },
+  "client_ids": {
+    "status": "aoostar-wtr-status",
+    "command_listener": "aoostar-wtr-command-listener"
+  },
+  "topics": {
+    "control_power": "aoostar/control/power",
+    "status_power": "aoostar/status/power",
+    "status_action": "aoostar/status/action",
+    "status_hostname": "aoostar/status/hostname",
+    "status_uptime": "aoostar/status/uptime",
+    "status_last_command": "aoostar/status/last_command",
+    "status_last_result": "aoostar/status/last_result",
+    "status_last_message": "aoostar/status/last_message",
+    "status_last_updated": "aoostar/status/last_updated",
+    "status_history": "aoostar/status/history",
+    "status_jobs": "aoostar/status/jobs",
+    "status_boot_id": "aoostar/status/boot_id",
+    "status_boot_time": "aoostar/status/boot_time"
+  },
+  "timing": {
+    "publish_uptime_every": 30,
+    "history_max_entries": 500,
+    "job_history_max_entries": 100,
+    "max_parallel_jobs": 4
+  },
+  "commands": {
+    "shutdown_delay": {
+      "script": "shutdown_delay.sh",
+      "label": "Sluk om 1 minut",
+      "category": "power",
+      "timeout": 60
+    },
+    "shutdown_cancel": {
+      "script": "shutdown_cancel.sh",
+      "label": "Annuller slukning",
+      "category": "power",
+      "timeout": 60
+    },
+    "reboot_delay": {
+      "script": "reboot_delay.sh",
+      "label": "Genstart om 1 minut",
+      "category": "power",
+      "timeout": 60
+    },
+    "reboot_cancel": {
+      "script": "reboot_cancel.sh",
+      "label": "Annuller genstart",
+      "category": "power",
+      "timeout": 60
+    },
+    "run_watchtower": {
+      "script": "run_watchtower.sh",
+      "label": "Kør Watchtower",
+      "category": "maintenance",
+      "timeout": 3600
+    }
+  }
+}
