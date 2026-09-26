@@ -5,14 +5,14 @@ devices*
 
 !config.example.py
 !devices.example.py
-!configs/
+!homelab-panel/configs/
 
 # HomeLab Control
 
 config*
 
 !config.example.json
-!configs/
+!homelab-controlconfigs/
 
 # Runtime state/logs
 homelab-panel/state/
