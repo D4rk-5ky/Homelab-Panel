@@ -4,8 +4,9 @@ Homelab Panel monitors and controls homelab devices through a Flask webpage and 
 
 - `homelab-panel/`: webpage, ping/MQTT status, jobs, history, Home Assistant discovery, plus its own `configs/` and `modules/` directories.
 - `homelab-control/`: optional agent on each remote Linux host; keeps its JSON configuration in `configs/`, its reusable shell helper in `modules/`, runs explicitly allowed scripts, and publishes status/results.
+- `shared_modules/`: generic code that is genuinely reused by both components; currently MQTT transport only.
 - `scripts/`: shared Linux shutdown/reboot scripts and their common helper.
-- `homelab_mqtt.py`: shared **one-shot** Paho publisher for panel commands and shell-helper telemetry.
+- `homelab_mqtt.py`: independently executable one-shot MQTT CLI backed by `shared_modules/mqtt.py`.
 - `tests/`: regression checks for Home Assistant, command dispatch, and Paho publishing; protocol tests use localhost only.
 
 ### Panel code layout
@@ -18,11 +19,14 @@ The panel is intentionally split by responsibility without turning every helper 
 | `homelab-panel/configs/` | Active `config.py`/`devices.py` live here beside their tracked examples; `app.py` resolves this directory from its own location, not the shell working directory |
 | `homelab-panel/modules/` | Panel-specific reusable Python implementations; kept separate from the entry point without becoming separate services |
 | `homelab-panel/modules/panel_actions.py` | Local script execution guards, Wake-on-LAN retry/cancel mechanics, shutdown/reboot confirmation, and configured remote action dispatch |
-| `homelab-panel/modules/panel_mqtt.py` | Long-running/reconnecting panel MQTT client, receive cache, subscriptions, callbacks, direct telemetry/discovery publication, and diagnostics |
+| `homelab-panel/modules/panel_mqtt.py` | Panel-specific MQTT behavior: receive cache, subscriptions, dispatch callbacks, diagnostics, and HA/panel orchestration; generic Paho setup comes from the root shared module |
 | `homelab-panel/modules/panel_home_assistant.py` | Home Assistant MQTT Discovery documents, local/remote buttons, HA availability snapshots, and per-device state payloads |
-| `homelab_mqtt.py` | Disposable one-shot MQTT publisher used when a command/status publication must fail now rather than sit in a reconnect queue |
+| `shared_modules/mqtt.py` | Shared MQTT transport: Paho v1/v2-compatible client creation, auth, Last Will, connection-loop modes, common publish handling, payload/topic helpers, and bounded one-shot publishing |
+| `homelab_mqtt.py` | Thin independently executable one-shot CLI that delegates MQTT transport to `shared_modules/mqtt.py` |
 
-`app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. The three extracted modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. Configuration keys, web routes, MQTT topics/payloads, Home Assistant entity IDs, safety allow-lists, and power-script behavior are unchanged by this layout.
+`app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. Generic MQTT transport is implemented once in root `shared_modules/mqtt.py` and is imported independently by both `homelab-panel` and `homelab-control`; neither component imports the other component's modules. The three extracted modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. Configuration keys, web routes, MQTT topics/payloads, Home Assistant entity IDs, safety allow-lists, and power-script behavior are unchanged by this layout.
+
+`shared_modules/` is shared infrastructure, not another service and not a place for component-specific helpers. The panel can run without Homelab Control running, and Homelab Control can run without the panel running. If you deploy only the remote agent to another machine, keep `homelab-control/` under a project root that also contains `shared_modules/`, root `homelab_mqtt.py`, and the shared `scripts/` needed by its configured actions; you do **not** need to copy `homelab-panel/` to that machine.
 
 ## Automatically create the webpage buttons in Home Assistant
 
@@ -87,7 +91,7 @@ cp homelab-control/configs/config.example.json homelab-control/configs/config.js
 chmod +x scripts/*.sh
 ```
 
-`cp` copies each example to its active filename inside that component's `configs/` directory. Create the remote JSON config only on hosts using the agent. `chmod +x` makes the bundled action scripts executable. Edit hostnames, credentials, device addresses, MAC addresses, topics, and allowed commands before starting services. Keep the full project layout: the panel imports its own `configs/` and `modules/` relative to `app.py`, the remote agent resolves `configs/config.json` and `modules/homelab_control_lib.sh` relative to its own directory, and both components still find the shared `scripts/` directory through the project root.
+`cp` copies each example to its active filename inside that component's `configs/` directory. Create the remote JSON config only on hosts using the agent. `chmod +x` makes the bundled action scripts executable. Edit hostnames, credentials, device addresses, MAC addresses, topics, and allowed commands before starting services. Keep the full project layout: the panel imports its own `configs/` and `modules/` relative to `app.py`, the remote agent resolves `configs/config.json` and `modules/homelab_control_lib.sh` relative to its own directory, and both independently add the project root only so they can import `shared_modules/` and find the shared `scripts/` directory. Neither component imports code from the other component.
 
 The active configuration locations are exact: `homelab-panel/configs/config.py`, `homelab-panel/configs/devices.py`, and (when the agent is used) `homelab-control/configs/config.json`. Root-level `homelab-panel/config.py`, `homelab-panel/devices.py`, and `homelab-control/config.json` are not read. When upgrading an older installation, move your existing active files into these `configs/` directories rather than replacing them with the examples.
 

@@ -5,7 +5,12 @@ import threading
 import time
 from datetime import datetime
 
-import paho.mqtt.client as mqtt
+from shared_modules.mqtt import (
+    connect_client,
+    create_client,
+    decode_message_payload,
+    publish_client_message,
+)
 
 
 class PanelMqttRuntime:
@@ -101,8 +106,9 @@ class PanelMqttRuntime:
         if self.client is None or not self.connected or not topic:
             return False
         try:
-            info = self.client.publish(topic, payload=payload, qos=qos, retain=retain)
-            return getattr(info, "rc", mqtt.MQTT_ERR_SUCCESS) == mqtt.MQTT_ERR_SUCCESS
+            return publish_client_message(
+                self.client, topic, payload, qos=qos, retain=retain
+            )
         except Exception as exc:
             print(f"MQTT direct publish failed for {topic}: {exc}", flush=True)
             return False
@@ -202,7 +208,7 @@ class PanelMqttRuntime:
 
     def on_message(self, client, userdata, msg):
         """Cache and dispatch incoming MQTT messages without executing retained controls."""
-        payload = msg.payload.decode("utf-8", errors="replace").strip()
+        payload = decode_message_payload(msg)
         panel_control_topic = str(self._mqtt_config().get("panel_control_topic", "")).strip()
         previous_payload = self.set_state(msg.topic, payload, retain=bool(getattr(msg, "retain", False)), qos=int(getattr(msg, "qos", 0)))
         if panel_control_topic and msg.topic == panel_control_topic:
@@ -222,35 +228,40 @@ class PanelMqttRuntime:
         self._handle_boot_id_message(msg.topic, payload)
         print(f"Homelab-panel MQTT message: {msg.topic} = {payload}", flush=True)
 
-    def build_client(self):
-        """Create the reconnecting Paho client with compatibility for callback API v1/v2."""
+    def start(self) -> None:
+        """Start the status monitor and reconnecting MQTT network loop."""
+        self._start_status_monitor()
         cfg = self._mqtt_config()
-        try:
-            client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=cfg["client_id_panel_status"], protocol=mqtt.MQTTv311)
-        except AttributeError:
-            client = mqtt.Client(client_id=cfg["client_id_panel_status"], protocol=mqtt.MQTTv311)
-        client.reconnect_delay_set(min_delay=1, max_delay=30)
+        will = None
         if self._home_assistant_enabled():
             ha_cfg = self._ha_config()
             availability_topic = str(ha_cfg.get("availability_topic", "homelab-panel/availability")).strip()
             if availability_topic:
-                client.will_set(availability_topic, payload="offline", qos=int(ha_cfg.get("qos", 1)), retain=True)
-        return client
-
-    def start(self) -> None:
-        """Start the status monitor and reconnecting MQTT network loop."""
-        self._start_status_monitor()
-        client = self.build_client()
-        cfg = self._mqtt_config()
-        if cfg["user"]:
-            client.username_pw_set(cfg["user"], cfg["pass"])
-        client.on_connect = self.on_connect
-        client.on_disconnect = self.on_disconnect
-        client.on_message = self.on_message
+                will = {
+                    "topic": availability_topic,
+                    "payload": "offline",
+                    "qos": int(ha_cfg.get("qos", 1)),
+                    "retain": True,
+                }
+        client = create_client(
+            cfg,
+            client_id=cfg["client_id_panel_status"],
+            will=will,
+            on_connect=self.on_connect,
+            on_disconnect=self.on_disconnect,
+            on_message=self.on_message,
+            reconnect_min=1,
+            reconnect_max=30,
+        )
         try:
             self.client = client
-            client.connect_async(cfg["host"], cfg["port"], keepalive=60)
-            client.loop_start()
+            connect_client(
+                client,
+                host=cfg["host"],
+                port=cfg.get("port", 1883),
+                keepalive=60,
+                mode="async_thread",
+            )
             print("Homelab-panel MQTT listener started; broker connection runs in background", flush=True)
         except Exception as exc:
             print(f"MQTT listener kunne ikke starte: {exc}", flush=True)

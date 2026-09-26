@@ -24,6 +24,19 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.19 — 2026-09-26
+
+### Root shared MQTT module
+
+- Added root `shared_modules/mqtt.py` as the single generic MQTT transport implementation used by both `homelab-panel` and `homelab-control`. Added `shared_modules/__init__.py` only as the package marker; no unrelated utility modules were introduced.
+- Consolidated Paho client creation/callback-API compatibility, username/password setup, Last Will configuration, connection-loop modes, direct publish return handling, payload decoding, related-topic derivation, and the bounded disposable one-shot publisher into that shared MQTT module.
+- `homelab-panel/modules/panel_mqtt.py` now keeps only panel-specific MQTT state/subscriptions/dispatch/diagnostics and calls the shared transport helpers. `homelab-panel/app.py` imports the shared one-shot publisher and related-topic helper directly.
+- `homelab-control` command-listener and status-indicator entry points add the project root to `sys.path` from `__file__`, then use the shared MQTT module for client setup/connect/publish helpers while retaining their own job/status logic. Neither component imports the other component's code.
+- Root `homelab_mqtt.py` remains independently executable for shell/service use but is now a thin CLI over the shared MQTT implementation rather than a second transport implementation.
+- No MQTT topics/payloads, QoS/retain defaults, broker credentials, command allow-lists, Home Assistant IDs, browser routes, power semantics, or component-local config paths changed.
+- Updated regression tests, README, code map, validation, and version metadata for the shared transport architecture.
+- Version advances exactly from 0.0.18 to 0.0.19.
+
 ## 0.0.18 — 2026-09-26
 
 ### Component-local config and module folders

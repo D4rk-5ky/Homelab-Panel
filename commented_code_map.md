@@ -90,7 +90,6 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `on_connect_compat()` | Compatibility Paho callback delegating connect/subscription/HA snapshot/history work to `PanelMqttRuntime.on_connect()`. |
 | `on_disconnect_compat()` | Compatibility Paho callback delegating disconnect state/history handling to `PanelMqttRuntime.on_disconnect()`. |
 | `on_message_compat()` | Compatibility Paho callback delegating receive-cache/control/HA-birth/job/boot/power dispatch to `PanelMqttRuntime.on_message()` while preserving the actual panel control handler as the worker target. |
-| `build_mqtt_client()` | Delegates Paho client construction to `PanelMqttRuntime.build_client()`. |
 | `start_mqtt_listener()` | Delegates startup of the status monitor and asynchronous broker loop to `PanelMqttRuntime.start()`. |
 | `login()` | GET/POST login route; creates session only after credential match. |
 | `logout()` | POST route that clears the web session. |
@@ -139,7 +138,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 ## `homelab-panel/modules/panel_mqtt.py`
 
-`PanelMqttRuntime` owns the reconnecting panel MQTT client and its mutable transport state. One-shot command publishing still uses the project-root `homelab_mqtt.py`; this module is specifically the panel's long-running listener/telemetry runtime.
+`PanelMqttRuntime` owns only the panel-specific reconnecting MQTT state, subscriptions, dispatch, diagnostics, and cache. Generic Paho construction/auth/connect/publish behavior and one-shot transport live once in root `shared_modules/mqtt.py`.
 
 | Method | What / why |
 |---|---|
@@ -155,8 +154,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `PanelMqttRuntime.on_connect()` | Marks connected, rebuilds/subscribes the topic set, republishes HA snapshot and records connect/reconnect events. |
 | `PanelMqttRuntime.on_disconnect()` | Marks disconnected with reason and records per-device broker disconnect events. |
 | `PanelMqttRuntime.on_message()` | Caches messages, rejects retained panel controls, dispatches fresh controls on a worker, handles HA birth, then forwards status/job/boot transitions to app callbacks. |
-| `PanelMqttRuntime.build_client()` | Builds Paho MQTT 3.1.1 client with callback-API compatibility, reconnect delay and optional HA availability LWT. |
-| `PanelMqttRuntime.start()` | Starts the app status monitor, configures credentials/callbacks, connects asynchronously and starts the Paho network loop. |
+| `PanelMqttRuntime.start()` | Starts the app status monitor, supplies panel callbacks/optional HA Last Will to the shared MQTT client factory, then starts the shared asynchronous-threaded connection mode. |
 
 ## Flask routes
 
@@ -198,8 +196,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `parse_control_payload()` | Accepts legacy plain command or JSON envelope with job_id/source; supports gradual agent upgrades. |
 | `on_connect()` | Subscribes control topic and republishes retained jobs on reconnect. |
 | `on_message()` | Decodes plain/JSON payloads and queues only configured command IDs; this remote callback has no retained-message rejection, so the sender must keep command retention off. |
-| `build_client()` | Creates compatible Paho client. |
-| `main()` | Configures credentials/callbacks, connects and runs MQTT loop forever. |
+| `main()` | Supplies command-listener callbacks/settings to the shared MQTT client factory, then uses the shared blocking loop mode; job execution remains local to this component. |
 
 ### Remote command protocol
 
@@ -240,8 +237,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `uptime_loop()` | Periodically republishes online and uptime. |
 | `action_sync_loop()` | Republishes action only when local action file changes. |
 | `command_status_sync_loop()` | Republishes current command fields only when local state changes. |
-| `build_client()` | Creates compatible Paho status client. |
-| `main()` | Initializes boot state, MQTT LWT, sync threads, signals and clean offline publish. |
+| `main()` | Initializes boot state, supplies status callbacks/LWT to the shared MQTT factory, starts the shared threaded loop, then owns local sync threads/signals/clean offline shutdown. |
 | `handle_signal()` *(nested in `main`)* | Sets the shared stop event for SIGTERM/SIGINT; lets the service exit through its clean offline publish/disconnect path. |
 
 ## Shell functions
@@ -402,31 +398,26 @@ Panel tests use real Flask/Jinja with example configuration, temporary runtime f
 | `test_confirmation_title_placeholder_resolves_and_is_js_safe()` | Verifies `$TITLE` resolves from the configured device title, literal confirmations remain unchanged, and apostrophes are safely JSON-encoded in rendered JavaScript. |
 | `test_webpages_still_render()` | Exercises the real Flask/Jinja dashboard, history, diagnostics and login pages after the integration change. |
 
+## `shared_modules/mqtt.py`
+
+| Function | What it does / why it exists |
+|---|---|
+| `create_client()` | The single project-wide long-running client factory: builds Paho MQTT v3.1.1 with callback-API compatibility, optional reconnect backoff, auth, Last Will, and caller-owned callbacks. Both components use it without importing each other. |
+| `connect_client()` | Starts a configured client in the requested synchronous, threaded, asynchronous-threaded, or connect-only network-loop mode; preserves each service's previous loop semantics. |
+| `derive_related_topic()` | Resolves an explicitly configured status topic or derives a sibling from `/last_message`; replaces duplicated topic-derivation logic in panel and control status code. |
+| `decode_message_payload()` | Decodes MQTT message payloads as stripped UTF-8 with replacement for malformed bytes; panel and control listener use the same safe behavior. |
+| `publish_client_message()` | Publishes through an existing client, normalizes Paho return status, and optionally waits for local publish completion; reused by panel and both control processes. |
+| `_publish_once()` | Implements the no-reconnect disposable MQTT send used by command/status one-shot publishing, including validation, deadline processing, and transport shutdown on uncertain failure. |
+| `network_step()` (nested in `_publish_once`) | Advances the disposable client network loop only within the remaining hard deadline and turns Paho loop errors/timeouts into a failed one-shot send. |
+| `publish_message()` | Runs `_publish_once()` by launching `shared_modules/mqtt.py` itself as the worker process, so DNS/connect/send are bounded by a hard parent timeout and credentials/payload stay off argv; the root CLI wrapper is not part of transport execution. |
+| `cli_main()` | Implements the standalone MQTT CLI argument/config/stdin handling once inside the shared module; root `homelab_mqtt.py` is only an executable adapter. |
+
+`shared_modules/mqtt.py` is intentionally the only shared Python implementation module in this release. Component-specific panel state/HA/actions and control jobs/status remain inside their own directories so the two components share infrastructure, not each other's application logic.
+
 ## `homelab_mqtt.py`
 
-The project uses Paho for every MQTT operation. The panel's persistent listener and the agent services keep their existing clients. The shared publisher handles the short-lived command/telemetry operations previously performed outside Python.
+This root executable intentionally contains no MQTT implementation functions. It imports `cli_main` as `main` plus the one-shot publish symbols from `shared_modules/mqtt.py` for CLI use/backward import compatibility, then exits with `main()` when executed. Keeping this adapter at the root preserves existing shell/service paths while the implementation exists only once.
 
-| Function | What / why |
-|---|---|
-| `build_client()` | Creates a new MQTT 3.1.1 clean-session client, selecting callback API v2 when available and the older constructor otherwise. Each send has a separate client so it cannot displace a persistent status subscriber. |
-| `_publish_once()` | Connects once, checks broker acceptance, publishes exact topic/payload/QoS/retain values, and runs the Paho network loop until local send or QoS acknowledgement completes. It never reconnects. On failure it shuts/closes the socket before disconnect can flush pending packets; failures after publication starts report uncertain delivery. |
-| `on_connect()` (nested in `_publish_once`) | Captures CONNACK result codes from either supported callback signature; publication proceeds only after broker acceptance. |
-| `network_step()` (nested in `_publish_once`) | Advances the existing connection for at most 0.2 seconds or the remaining deadline and checks errors. Keeping loop ownership here avoids background retry threads. |
-| `publish_message()` | Launches the Paho worker using the caller's Python interpreter with a hard timeout, passes credentials and payload as JSON on stdin, and validates the JSON response. `subprocess.run` kills and waits for a timed-out worker, preserving the panel's 20-second upper bound even during blocked DNS. Returns `(ok, message)` for shared error handling. |
-| `main()` | Parses the publishing CLI, reads the existing JSON `mqtt` object and stdin payload, and returns a meaningful exit status. Internal worker mode calls `_publish_once()` and returns its JSON result to the bounded parent. |
-
-### Publisher CLI and process details
-
-- `--config PATH` and `--topic TOPIC`: select a JSON broker config and publication topic. Broker fields are `mqtt.host`, `port` (default 1883), `user`, and `pass`; empty user skips authentication. One-shot keepalive is fixed at 60 seconds, independent of persistent-service keepalive.
-- `--qos {0,1,2}`: MQTT delivery level; CLI default is 1, while panel commands explicitly pass their configured QoS.
-- `--retain`: defaults off; the shell telemetry wrapper enables it. Command retention still follows the existing panel setting and must stay off in normal use.
-- `--timeout SECONDS`: positive finite total time limit, default 20 seconds, enforced by the parent process. It also bounds shell telemetry rather than leaving it waiting indefinitely.
-- `-h` / `--help`: displays usage without reading input or connecting.
-- `--request-stdin`: internal JSON worker transport, mutually exclusive with `--config`. The parent passes `settings`, `topic`, `payload`, `qos`, `retain`, and `timeout`; the worker returns `[success, message]`. The parent supplies the hard process limit, while the worker also checks a network deadline.
-- Normal CLI exit codes are 0 for publication completion, 1 for config/input/publication failure, and 2 for argument errors. A successful worker process can return `[false, message]`; its parent propagates that failure.
-- `sys.executable -B homelab_mqtt.py --request-stdin`: uses the same installed Paho environment as the caller and suppresses bytecode writes. Credentials are never command-line parameters.
-- `printf '%s' "$payload" | python3 ... > /dev/null`: the shell wrapper preserves payload whitespace, silences success output, keeps errors on stderr, and uses `pipefail` for failure propagation.
-- MQTT success is transport-level completion. It does not confirm script execution or a physical power transition. Missing acknowledgements can leave delivery unknown, so failed publications are not retried automatically.
 
 ## `tests/test_mqtt_publish.py`
 

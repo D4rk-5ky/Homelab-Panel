@@ -8,9 +8,18 @@ import threading
 import time
 from datetime import datetime
 
-import paho.mqtt.client as mqtt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from shared_modules.mqtt import (
+    connect_client,
+    create_client,
+    derive_related_topic as shared_derive_related_topic,
+    publish_client_message,
+)
 STATE_DIR = os.path.join(BASE_DIR, "state")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")
@@ -53,28 +62,12 @@ TOPIC_LAST_MESSAGE = CONFIG["topics"]["status_last_message"]
 TOPIC_LAST_UPDATED = CONFIG["topics"]["status_last_updated"]
 
 def derive_related_topic(explicit_key: str, suffix: str) -> str:
-    explicit = str(CONFIG["topics"].get(explicit_key, "")).strip()
-    if explicit:
-        return explicit
-    last_message_topic = str(CONFIG["topics"].get("status_last_message", "")).strip()
-    marker = "/last_message"
-    if last_message_topic.endswith(marker):
-        return last_message_topic[:-len(marker)] + suffix
-    return ""
-
-def derive_history_topic() -> str:
-    explicit = str(CONFIG["topics"].get("status_history", "")).strip()
-    if explicit:
-        return explicit
-
-    last_message_topic = str(CONFIG["topics"].get("status_last_message", "")).strip()
-    suffix = "/last_message"
-    if last_message_topic.endswith(suffix):
-        return last_message_topic[:-len(suffix)] + "/history"
-    return ""
+    return shared_derive_related_topic(
+        CONFIG["topics"], explicit_key, suffix, base_key="status_last_message"
+    )
 
 
-TOPIC_HISTORY = derive_history_topic()
+TOPIC_HISTORY = derive_related_topic("status_history", "/history")
 TOPIC_BOOT_ID = derive_related_topic("status_boot_id", "/boot_id")
 TOPIC_BOOT_TIME = derive_related_topic("status_boot_time", "/boot_time")
 
@@ -299,7 +292,7 @@ def publish(topic: str, payload: str, retain: bool = True, qos: int = 1) -> None
     global mqtt_client
     if mqtt_client is None or not topic:
         return
-    mqtt_client.publish(topic, payload, qos=qos, retain=retain)
+    publish_client_message(mqtt_client, topic, payload, qos=qos, retain=retain)
 
 
 def publish_history() -> None:
@@ -366,20 +359,6 @@ def command_status_sync_loop():
         stop_event.wait(2)
 
 
-def build_client():
-    try:
-        return mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-    except AttributeError:
-        return mqtt.Client(
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-
-
 def main() -> int:
     global mqtt_client
 
@@ -399,19 +378,22 @@ def main() -> int:
     if not os.path.exists(LAST_UPDATED_FILE):
         write_text_file(LAST_UPDATED_FILE, datetime.now().isoformat(timespec="seconds"))
 
-    client = build_client()
-
-    if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASS)
-
-    client.will_set(TOPIC_POWER, payload="offline", qos=1, retain=True)
-
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
+    client = create_client(
+        CONFIG["mqtt"],
+        client_id=CLIENT_ID,
+        will={"topic": TOPIC_POWER, "payload": "offline", "qos": 1, "retain": True},
+        on_connect=on_connect,
+        on_disconnect=on_disconnect,
+    )
 
     mqtt_client = client
-    client.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
-    client.loop_start()
+    connect_client(
+        client,
+        host=MQTT_HOST,
+        port=MQTT_PORT,
+        keepalive=MQTT_KEEPALIVE,
+        mode="thread",
+    )
 
     threading.Thread(target=uptime_loop, daemon=True).start()
     threading.Thread(target=action_sync_loop, daemon=True).start()

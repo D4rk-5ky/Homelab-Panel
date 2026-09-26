@@ -8,10 +8,18 @@ import time
 import uuid
 from datetime import datetime
 
-import paho.mqtt.client as mqtt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from shared_modules.mqtt import (
+    connect_client,
+    create_client,
+    decode_message_payload,
+    publish_client_message,
+)
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")
 STATE_DIR = os.path.join(BASE_DIR, "state")
@@ -157,11 +165,9 @@ def publish_jobs() -> None:
     if MQTT_CLIENT is None or not TOPIC_JOBS:
         return
     payload = json.dumps(get_jobs_snapshot(), ensure_ascii=False, separators=(",", ":"))
-    info = MQTT_CLIENT.publish(TOPIC_JOBS, payload=payload, qos=1, retain=True)
-    try:
-        info.wait_for_publish(timeout=5)
-    except Exception:
-        pass
+    publish_client_message(
+        MQTT_CLIENT, TOPIC_JOBS, payload, qos=1, retain=True, wait_timeout=5
+    )
 
 
 def recover_interrupted_jobs() -> None:
@@ -356,7 +362,7 @@ def on_connect(*args):
 
 
 def on_message(client, userdata, msg):
-    payload = msg.payload.decode("utf-8", errors="replace").strip()
+    payload = decode_message_payload(msg)
     command, requested_job_id, source = parse_control_payload(payload)
     print(f"Received command: {command}", flush=True)
 
@@ -369,35 +375,21 @@ def on_message(client, userdata, msg):
         print(f"Queued command={command} job_id={job_id}", flush=True)
 
 
-def build_client():
-    try:
-        return mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-    except AttributeError:
-        return mqtt.Client(
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-
-
 def main() -> int:
     global MQTT_CLIENT
     os.makedirs(STATE_DIR, exist_ok=True)
     recover_interrupted_jobs()
-    client = build_client()
+    client = create_client(
+        CONFIG["mqtt"], client_id=CLIENT_ID, on_connect=on_connect, on_message=on_message
+    )
     MQTT_CLIENT = client
-
-    if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASS)
-
-    client.on_connect = on_connect
-    client.on_message = on_message
-
-    client.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
-    client.loop_forever()
+    connect_client(
+        client,
+        host=MQTT_HOST,
+        port=MQTT_PORT,
+        keepalive=MQTT_KEEPALIVE,
+        mode="forever",
+    )
     return 0
 
 

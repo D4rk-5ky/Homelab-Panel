@@ -71,8 +71,8 @@ except ImportError:
 STATUS_MONITOR_INTERVAL_SECONDS = max(2, int(STATUS_MONITOR_INTERVAL_SECONDS))
 PANEL_JOB_MAX_ENTRIES = max(1, int(PANEL_JOB_MAX_ENTRIES))
 
-# The panel and agent shell helpers share the same one-shot Paho publisher.
-from homelab_mqtt import publish_message
+# The panel and control components share generic MQTT transport primitives.
+from shared_modules.mqtt import derive_related_topic, publish_message
 
 # Keep the Flask entry point focused on web/state orchestration. Project-specific
 # implementations live under homelab-panel/modules while this entry point remains
@@ -220,14 +220,9 @@ def resolve_confirmation_text(configured_text, title: str) -> str:
 
 
 def get_related_status_topic(status_cfg: dict, explicit_key: str, suffix: str) -> str:
-    explicit = str(status_cfg.get(explicit_key, "")).strip()
-    if explicit:
-        return explicit
-    last_message_topic = str(status_cfg.get("last_message_topic", "")).strip()
-    marker = "/last_message"
-    if last_message_topic.endswith(marker):
-        return last_message_topic[:-len(marker)] + suffix
-    return ""
+    return derive_related_topic(
+        status_cfg, explicit_key, suffix, base_key="last_message_topic"
+    )
 
 
 def get_hostname_topic_for_status_cfg(status_cfg: dict) -> str:
@@ -1409,12 +1404,6 @@ def on_disconnect_compat(*args):
 def on_message_compat(client, userdata, msg):
     """Compatibility callback delegating incoming messages to the MQTT module."""
     return MQTT_RUNTIME.on_message(client, userdata, msg)
-
-
-
-def build_mqtt_client():
-    """Build the reconnecting MQTT client through the runtime module."""
-    return MQTT_RUNTIME.build_client()
 
 
 
