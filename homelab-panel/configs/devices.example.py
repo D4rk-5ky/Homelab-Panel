@@ -59,10 +59,8 @@ REMOTE_DEVICES = {
         "mqtt_controls": {
             "title": "Aoostar WTR kontrol",
             "topic": "aoostar/control/power",
-            # True sender JSON med command+job_id. Homelab Control kan
-            # dermed rapportere resultater på præcis samme job i panelet.
-            # False/udeladt beholder legacy plain-text payloads.
-            "json_jobs": True,
+            # Panelet sender altid JSON med command+job_id+source, så
+            # Homelab Control kan rapportere resultat på det samme job.
             "buttons": [
                 {
                     "id": "shutdown_delay",

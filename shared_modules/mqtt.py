@@ -49,12 +49,12 @@ class MqttClient:
             return str(value)
 
     def _build_client(self):
-        options = {"clean_session": True, "protocol": mqtt.MQTTv311}
-        if self.client_id:
-            options["client_id"] = self.client_id
-        if hasattr(mqtt, "CallbackAPIVersion"):
-            options["callback_api_version"] = mqtt.CallbackAPIVersion.VERSION2
-        client = mqtt.Client(**options)
+        client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self.client_id,
+            clean_session=True,
+            protocol=mqtt.MQTTv311,
+        )
         if self.reconnect_min is not None or self.reconnect_max is not None:
             client.reconnect_delay_set(min_delay=1 if self.reconnect_min is None else int(self.reconnect_min),
                                        max_delay=30 if self.reconnect_max is None else int(self.reconnect_max))
@@ -72,23 +72,16 @@ class MqttClient:
     def _subscription_items(self) -> list[tuple[str, int]]:
         values = self.subscriptions() if callable(self.subscriptions) else self.subscriptions
         topics = {}
-        for item in values or ():
-            if isinstance(item, str):
-                topic, qos = item, 1
-            else:
-                try:
-                    topic, qos = item
-                except (TypeError, ValueError):
-                    continue
-            if topic := str(topic).strip():
+        for topic, qos in values or ():
+            topic = str(topic).strip()
+            if topic:
                 topics[topic] = int(qos)
         return sorted(topics.items())
 
-    def _handle_connect(self, *args):
-        client, reason = args[0], args[3] if len(args) >= 4 else 0
+    def _handle_connect(self, client, userdata, flags, reason_code, properties):
         self.client = client
-        self.connected = self._reason_value(reason) in (None, 0)
-        self.connection_reason = "" if self.connected else self._reason_text(reason)
+        self.connected = self._reason_value(reason_code) in (None, 0)
+        self.connection_reason = "" if self.connected else self._reason_text(reason_code)
         if not self.connected:
             if self.on_disconnect:
                 self.on_disconnect(self.connection_reason)
@@ -98,9 +91,8 @@ class MqttClient:
         if self.on_connect:
             self.on_connect()
 
-    def _handle_disconnect(self, *args):
-        reason = args[3] if len(args) >= 4 else (args[2] if len(args) >= 3 else "")
-        self.connected, self.connection_reason = False, self._reason_text(reason)
+    def _handle_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
+        self.connected, self.connection_reason = False, self._reason_text(reason_code)
         if self.on_disconnect:
             self.on_disconnect(self.connection_reason)
 
@@ -108,9 +100,6 @@ class MqttClient:
         if self.on_message:
             self.on_message(str(message.topic), message.payload.decode("utf-8", errors="replace").strip(),
                             bool(getattr(message, "retain", False)), int(getattr(message, "qos", 0)))
-
-    # Public callback adapters are useful for tests/compatibility without exposing Paho elsewhere.
-    handle_connect, handle_disconnect, handle_message = _handle_connect, _handle_disconnect, _handle_message
 
     def start(self, *, mode: str = "forever"):
         if self.client is None:
@@ -127,7 +116,7 @@ class MqttClient:
                 self.client.loop_forever()
             elif mode == "thread":
                 self.client.loop_start()
-            elif mode != "connect":
+            else:
                 raise ValueError(f"Unsupported MQTT connection mode: {mode}")
         return self
 
@@ -136,7 +125,7 @@ class MqttClient:
         if self.client is None or not self.connected or not topic:
             return False
         info = self.client.publish(topic, payload=payload, qos=qos, retain=retain)
-        if getattr(info, "rc", mqtt.MQTT_ERR_SUCCESS) != mqtt.MQTT_ERR_SUCCESS:
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
             return False
         if wait_timeout is not None:
             try:
@@ -159,15 +148,6 @@ class MqttClient:
             pass
 
 
-def derive_related_topic(mapping: dict, explicit_key: str, suffix: str, *, base_key: str) -> str:
-    """Use an explicit topic or derive its sibling from a /last_message topic."""
-    explicit = str(mapping.get(explicit_key, "")).strip()
-    if explicit:
-        return explicit
-    base, marker = str(mapping.get(base_key, "")).strip(), "/last_message"
-    return base[:-len(marker)] + suffix if base.endswith(marker) else ""
-
-
 def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
                   retain: bool = False, timeout: float = 20) -> tuple[bool, str]:
     """Publish once with no reconnect/retry; close hard on uncertain failure."""
@@ -175,7 +155,7 @@ def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
     published = publish_started = False
     connection_result = None
 
-    def on_connect(client, userdata, flags, reason_code, properties=None):
+    def on_connect(client, userdata, flags, reason_code, properties):
         nonlocal connection_result
         connection_result = reason_code
 
@@ -190,8 +170,7 @@ def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
         deadline = time.monotonic() + timeout
         client = MqttClient(settings)._build_client()
         client.on_connect = on_connect
-        if hasattr(client, "connect_timeout"):
-            client.connect_timeout = min(5.0, timeout)
+        client.connect_timeout = min(5.0, timeout)
         rc = client.connect(settings["host"], int(settings.get("port", 1883)), keepalive=60)
         if rc != mqtt.MQTT_ERR_SUCCESS:
             raise RuntimeError(f"MQTT connection failed: {mqtt.error_string(rc)}")

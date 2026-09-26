@@ -24,6 +24,26 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.21 — 2026-09-26
+
+### Current-code-only cleanup and dead/legacy path removal
+
+- Audited every current Python and shell function against direct callers, callback registrations, thread targets, Flask route/hooks, service entry points, and shell call sites. After cleanup, every remaining function has a current execution purpose; the only Python functions without a textual name-call are Flask hooks/routes registered by decorators.
+- Removed the old app-level compatibility/delegation layer around `PanelActionManager`, `PanelMqttRuntime`, and `HomeAssistantIntegration`. `app.py` now calls the owning module objects directly instead of mirroring action, MQTT, HA, and connection-state functions/flags.
+- Removed derived/sibling status-topic compatibility. Current `devices.py` status topics are explicit; empty entries disable that specific subscription. `PanelMqttRuntime` uses one local `STATUS_TOPIC_KEYS` tuple for subscription and diagnostics rather than repeating the same current topic list.
+- Removed the old query-string `PANEL_TOKEN` access path. Web access is now only open when web auth is disabled or protected by the configured Flask session login when enabled.
+- Removed delayed-command aliases and implicit remote targeting. Panel-control MQTT now requires an explicit `target` (`remote` or `local`); remote commands use their configured button IDs directly.
+- Removed `json_jobs` and plain-text remote-agent command support. Panel-to-agent commands always use the current JSON `command`/`job_id`/`source` envelope, and the agent rejects plain strings or partial envelopes.
+- Removed old command-map string entries. Homelab Control command allow-list entries are current object specs; object defaults for label/category/timeout remain supported as current configuration behavior.
+- Removed pre-current boot-history migration/archive helpers. Boot handling now compares the saved/current Linux boot ID, clears current command fields and appends a boot event only when an already-known boot ID changes.
+- Removed Paho v1 callback-constructor support, public callback aliases, flexible string subscriptions, and the unused connect-only lifecycle mode. `shared_modules/mqtt.py` now requires Paho callback API v2 (`paho-mqtt` 2.x+) and supports only the three production long-running modes (`forever`, `thread`, `async_thread`).
+- Removed duplicate `load_config()` functions, the unused status-indicator logs-directory responsibility, shell `json_get_optional()`, invalid-history-limit fallback, no-op command alias variables, and other current-path leftovers identified by the function/caller audit.
+- Kept component boundaries intact: `homelab-panel` and `homelab-control` do not import one another. The only shared Python implementation remains `shared_modules/mqtt.py`; panel-specific and control-specific behavior stays in its own component. Existing shared root power scripts remain unchanged as the configured action executables.
+- Updated examples and README to document only the current configuration/protocol: required local HA `name`, explicit status topics, explicit panel `target`, JSON-only agent commands, and Paho 2.x+.
+- Updated tests away from removed compatibility surfaces and added assertions for the current explicit-target/JSON-envelope/Paho-v2 paths.
+- Production Python/shell source is **3,523 lines**, down from **4,018** in 0.0.20 (−495 lines) while retaining the current features and safety/path/allow-list behavior.
+- Version advances exactly from 0.0.20 to 0.0.21.
+
 ## 0.0.20 — 2026-09-26
 
 ### One shared MQTT implementation/API

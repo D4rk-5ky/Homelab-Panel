@@ -30,44 +30,15 @@ print(data)
 PY
 }
 
-json_get_optional() {
-    local key="$1"
-    local default_value="${2:-}"
-    python3 - "$CONFIG_FILE" "$key" "$default_value" <<'PY'
-import json, sys
-config_path = sys.argv[1]
-key_path = sys.argv[2].split(".")
-default = sys.argv[3]
-with open(config_path, "r", encoding="utf-8") as f:
-    data = json.load(f)
-try:
-    for part in key_path:
-        data = data[part]
-except (KeyError, TypeError):
-    print(default)
-else:
-    print(data)
-PY
-}
-
 TOPIC_POWER="$(json_get topics.status_power)"
 TOPIC_ACTION="$(json_get topics.status_action)"
 TOPIC_LAST_COMMAND="$(json_get topics.status_last_command)"
 TOPIC_LAST_RESULT="$(json_get topics.status_last_result)"
 TOPIC_LAST_MESSAGE="$(json_get topics.status_last_message)"
 TOPIC_LAST_UPDATED="$(json_get topics.status_last_updated)"
-TOPIC_HISTORY="$(json_get_optional topics.status_history '')"
-HISTORY_MAX_ENTRIES="$(json_get_optional timing.history_max_entries '100')"
+TOPIC_HISTORY="$(json_get topics.status_history)"
+HISTORY_MAX_ENTRIES="$(json_get timing.history_max_entries)"
 
-# Compatibility with older active configs: derive aoostar/status/history from
-# aoostar/status/last_message when status_history has not yet been added.
-if [[ -z "${TOPIC_HISTORY}" && "${TOPIC_LAST_MESSAGE}" == */last_message ]]; then
-    TOPIC_HISTORY="${TOPIC_LAST_MESSAGE%/last_message}/history"
-fi
-
-if ! [[ "${HISTORY_MAX_ENTRIES}" =~ ^[0-9]+$ ]] || [[ "${HISTORY_MAX_ENTRIES}" -lt 1 ]]; then
-    HISTORY_MAX_ENTRIES=100
-fi
 
 ensure_dirs() {
     mkdir -p "${STATE_DIR}"
@@ -117,10 +88,7 @@ import os
 import sys
 
 history_file, lock_file, max_entries, command, result, message, timestamp = sys.argv[1:]
-try:
-    max_entries = max(1, int(max_entries))
-except ValueError:
-    max_entries = 100
+max_entries = max(1, int(max_entries))
 
 os.makedirs(os.path.dirname(history_file), exist_ok=True)
 with open(lock_file, "a+", encoding="utf-8") as lock:

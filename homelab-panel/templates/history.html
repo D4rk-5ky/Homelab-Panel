@@ -22,7 +22,7 @@
 <body>
 <div class="wrap">
   <div class="top-bar">
-    <a class="back-link" href="{{ url_for('index', token=token) }}">← Tilbage til kontrolpanel</a>
+    <a class="back-link" href="{{ url_for('index') }}">← Tilbage til kontrolpanel</a>
     {% if web_auth_enabled %}<form method="post" action="{{ url_for('logout') }}"><button class="logout-button" type="submit">Log ud · {{ logged_in_username }}</button></form>{% endif %}
   </div>
 
@@ -30,9 +30,9 @@
   <p class="muted">Vist: {{ now }} · {{ history|length }} af {{ history_count_total }} events</p>
 
   <div class="filters">
-    <a class="filter {% if selected_filter=='all' %}active{% endif %}" href="{{ url_for('device_history',device_id=device_id,filter='all',token=token) }}">Alle</a>
-    {% for category in categories %}<a class="filter {% if selected_filter==category %}active{% endif %}" href="{{ url_for('device_history',device_id=device_id,filter=category,token=token) }}">{{ category|capitalize }}</a>{% endfor %}
-    <a class="filter {% if selected_filter=='errors' %}active{% endif %}" href="{{ url_for('device_history',device_id=device_id,filter='errors',token=token) }}">Fejl</a>
+    <a class="filter {% if selected_filter=='all' %}active{% endif %}" href="{{ url_for('device_history',device_id=device_id,filter='all') }}">Alle</a>
+    {% for category in categories %}<a class="filter {% if selected_filter==category %}active{% endif %}" href="{{ url_for('device_history',device_id=device_id,filter=category) }}">{{ category|capitalize }}</a>{% endfor %}
+    <a class="filter {% if selected_filter=='errors' %}active{% endif %}" href="{{ url_for('device_history',device_id=device_id,filter='errors') }}">Fejl</a>
   </div>
 
   <div class="card">

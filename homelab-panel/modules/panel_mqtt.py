@@ -5,7 +5,14 @@ import threading
 import time
 from datetime import datetime
 
-from shared_modules.mqtt import MqttClient, publish_message
+from shared_modules.mqtt import MqttClient
+
+
+STATUS_TOPIC_KEYS = (
+    "power_topic", "action_topic", "hostname_topic", "uptime_topic",
+    "last_command_topic", "last_result_topic", "last_message_topic", "last_updated_topic",
+    "history_topic", "jobs_topic", "boot_id_topic", "boot_time_topic",
+)
 
 
 class PanelMqttRuntime:
@@ -14,8 +21,7 @@ class PanelMqttRuntime:
     def __init__(self, *, mqtt_config, ha_config, remote_devices, home_assistant_enabled,
                  publish_home_assistant_snapshot, record_device_event,
                  process_panel_control_message, handle_device_power_transition,
-                 process_remote_jobs_message, handle_boot_id_message, start_status_monitor,
-                 topic_helpers, connected_changed=None):
+                 process_remote_jobs_message, handle_boot_id_message, start_status_monitor):
         self._mqtt_config, self._ha_config = mqtt_config, ha_config
         self._remote_devices = remote_devices
         self._home_assistant_enabled = home_assistant_enabled
@@ -25,15 +31,10 @@ class PanelMqttRuntime:
         self._handle_device_power_transition = handle_device_power_transition
         self._process_remote_jobs_message = process_remote_jobs_message
         self._handle_boot_id_message = handle_boot_id_message
-        self._start_status_monitor, self._topic_helpers = start_status_monitor, topic_helpers
-        self._connected_changed = connected_changed
+        self._start_status_monitor = start_status_monitor
         self.state, self.state_lock, self.subscriptions = {}, threading.Lock(), set()
         self.connection_info = {"connected_at": "", "disconnected_at": "", "disconnect_reason": ""}
         self.connected, self.transport = False, None
-
-    def publish_command(self, topic: str, payload: str) -> tuple[bool, str]:
-        cfg = self._mqtt_config()
-        return publish_message(cfg, topic, payload, qos=int(cfg["qos"]), retain=bool(cfg["retain"]))
 
     def set_state(self, topic: str, payload: str, retain: bool = False, qos: int = 0) -> str | None:
         with self.state_lock:
@@ -50,8 +51,6 @@ class PanelMqttRuntime:
             self.connection_info.update(connected_at=now, disconnect_reason="")
         else:
             self.connection_info.update(disconnected_at=now, disconnect_reason=reason)
-        if self._connected_changed:
-            self._connected_changed(self.connected)
 
     def get_state(self, topic: str) -> dict | None:
         if not topic:
@@ -73,24 +72,17 @@ class PanelMqttRuntime:
             print(f"MQTT direct publish failed for {topic}: {exc}", flush=True)
             return False
 
-    def _related_topics(self, status_cfg: dict):
-        h = self._topic_helpers
-        return (("hostname_topic", h["hostname"](status_cfg)), ("uptime_topic", h["uptime"](status_cfg)),
-                ("history_topic", h["history"](status_cfg)), ("jobs_topic", h["jobs"](status_cfg)),
-                ("boot_id_topic", h["boot_id"](status_cfg)), ("boot_time_topic", h["boot_time"](status_cfg)))
-
     def subscription_topics(self) -> list[tuple[str, int]]:
         topics = set()
         for device in self._remote_devices().values():
             status_cfg = device.get("status", {})
-            for key in ("power_topic", "action_topic", "last_command_topic", "last_result_topic", "last_message_topic", "last_updated_topic"):
+            for key in STATUS_TOPIC_KEYS:
                 if topic := str(status_cfg.get(key, "")).strip():
                     topics.add(topic)
-            topics.update(topic for _, topic in self._related_topics(status_cfg) if topic)
         if topic := str(self._mqtt_config().get("panel_control_topic", "")).strip():
             topics.add(topic)
         if self._home_assistant_enabled():
-            if topic := str(self._ha_config().get("status_topic", "homeassistant/status")).strip():
+            if topic := str(self._ha_config()["status_topic"]).strip():
                 topics.add(topic)
         self.subscriptions.clear()
         self.subscriptions.update(topics)
@@ -108,10 +100,9 @@ class PanelMqttRuntime:
         devices = {}
         for device_id, device in self._remote_devices().items():
             status_cfg, expected = device.get("status", {}), []
-            for key in ("power_topic", "action_topic", "last_command_topic", "last_result_topic", "last_message_topic", "last_updated_topic"):
+            for key in STATUS_TOPIC_KEYS:
                 if topic := str(status_cfg.get(key, "")).strip():
                     expected.append((key, topic))
-            expected.extend((key, topic) for key, topic in self._related_topics(status_cfg) if topic)
             rows = []
             for key, topic in expected:
                 state = states.get(topic, {})
@@ -157,8 +148,8 @@ class PanelMqttRuntime:
             threading.Thread(target=handler, args=(payload,), daemon=True).start()
             return
         ha_cfg = self._ha_config()
-        if self._home_assistant_enabled() and topic == str(ha_cfg.get("status_topic", "homeassistant/status")).strip():
-            if payload == str(ha_cfg.get("status_online_payload", "online")):
+        if self._home_assistant_enabled() and topic == str(ha_cfg["status_topic"]).strip():
+            if payload == str(ha_cfg["status_online_payload"]):
                 self._publish_home_assistant_snapshot()
             return
         self._handle_device_power_transition(topic, previous_payload, payload)
@@ -172,18 +163,13 @@ class PanelMqttRuntime:
         cfg, will = self._mqtt_config(), None
         if self._home_assistant_enabled():
             ha_cfg = self._ha_config()
-            if topic := str(ha_cfg.get("availability_topic", "homelab-panel/availability")).strip():
-                will = {"topic": topic, "payload": "offline", "qos": int(ha_cfg.get("qos", 1)), "retain": True}
+            if topic := str(ha_cfg["availability_topic"]).strip():
+                will = {"topic": topic, "payload": "offline", "qos": int(ha_cfg["qos"]), "retain": True}
         self.transport = MqttClient(cfg, client_id=cfg["client_id_panel_status"], will=will,
                                     subscriptions=self.subscription_topics, on_connect=self._connected,
                                     on_disconnect=self._disconnected, on_message=self._message,
                                     reconnect_min=1, reconnect_max=30)
         return self.transport
-
-    # Compatibility delegates: Paho callback mechanics still live only in shared_modules.mqtt.
-    def on_connect(self, *args): return self._ensure_transport().handle_connect(*args)
-    def on_disconnect(self, *args): return self._ensure_transport().handle_disconnect(*args)
-    def on_message(self, client, userdata, message): return self._ensure_transport().handle_message(client, userdata, message)
 
     def start(self) -> None:
         self._start_status_monitor()

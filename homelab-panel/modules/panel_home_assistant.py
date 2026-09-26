@@ -32,11 +32,11 @@ class HomeAssistantIntegration:
 
     def enabled(self) -> bool:
         """Return whether MQTT discovery/state integration is enabled."""
-        return bool(self._config().get("enabled", False))
+        return bool(self._config()["enabled"])
 
     def state_topic(self, device_id: str) -> str:
         """Build the retained JSON state topic for one remote device."""
-        prefix = str(self._config().get("state_prefix", "homelab-panel/ha")).strip().rstrip("/")
+        prefix = str(self._config()["state_prefix"]).strip().rstrip("/")
         return f"{prefix}/{device_id}/state"
 
     @staticmethod
@@ -44,7 +44,7 @@ class HomeAssistantIntegration:
         """Build the common Home Assistant device registry block."""
         return {
             "identifiers": [f"homelab_panel_{device_id}"],
-            "name": str(device.get("title") or device_id),
+            "name": str(device["title"]),
             "manufacturer": "Homelab Panel",
             "model": "Homelab Control Device",
         }
@@ -57,28 +57,28 @@ class HomeAssistantIntegration:
         if not control_topic or not button_id:
             return
         cfg = self._config()
-        discovery_prefix = str(cfg.get("discovery_prefix", "homeassistant")).strip().rstrip("/")
+        discovery_prefix = str(cfg["discovery_prefix"]).strip().rstrip("/")
         config = {
             "name": label,
             "unique_id": f"{node_id}_{button_id}",
             "command_topic": control_topic,
             "payload_press": json.dumps(command_payload, ensure_ascii=False, separators=(",", ":")),
             "retain": False,
-            "availability_topic": str(cfg.get("availability_topic", "homelab-panel/availability")).strip(),
+            "availability_topic": str(cfg["availability_topic"]).strip(),
             "device": device,
         }
         topic = f"{discovery_prefix}/button/{node_id}/{button_id}/config"
-        self._publish_direct(topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")), qos=int(cfg.get("qos", 1)), retain=bool(cfg.get("retain", True)))
+        self._publish_direct(topic, json.dumps(config, ensure_ascii=False, separators=(",", ":")), qos=int(cfg["qos"]), retain=bool(cfg["retain"]))
 
     def publish_discovery(self) -> None:
         """Publish all remote sensors/buttons and configured local buttons."""
         if not self.enabled() or not self._is_mqtt_connected():
             return
         cfg = self._config()
-        discovery_prefix = str(cfg.get("discovery_prefix", "homeassistant")).strip().rstrip("/")
-        availability_topic = str(cfg.get("availability_topic", "homelab-panel/availability")).strip()
-        qos = int(cfg.get("qos", 1))
-        retain = bool(cfg.get("retain", True))
+        discovery_prefix = str(cfg["discovery_prefix"]).strip().rstrip("/")
+        availability_topic = str(cfg["availability_topic"]).strip()
+        qos = int(cfg["qos"])
+        retain = bool(cfg["retain"])
 
         for device_id, device in self._remote_devices().items():
             state_topic = self.state_topic(device_id)
@@ -104,16 +104,16 @@ class HomeAssistantIntegration:
             node_id = f"homelab_panel_{device_id}"
             wol_cfg = device.get("wol", {})
             if wol_cfg.get("enabled"):
-                self.publish_button(node_id, "wake", str(wol_cfg.get("label") or "Wake"), {"device_id": device_id, "command": "power_on"}, dev)
-                self.publish_button(node_id, "cancel_wol", "Annullér Wake-on-LAN", {"device_id": device_id, "command": "cancel_wol"}, dev)
+                self.publish_button(node_id, "wake", str(wol_cfg.get("label") or "Wake"), {"target": "remote", "device_id": device_id, "command": "power_on"}, dev)
+                self.publish_button(node_id, "cancel_wol", "Annullér Wake-on-LAN", {"target": "remote", "device_id": device_id, "command": "cancel_wol"}, dev)
             for button in (device.get("mqtt_controls") or {}).get("buttons", []):
                 command_id = str(button.get("id", "")).strip()
-                self.publish_button(node_id, command_id, str(button.get("label") or command_id), {"device_id": device_id, "command": command_id}, dev)
+                self.publish_button(node_id, command_id, str(button.get("label") or command_id), {"target": "remote", "device_id": device_id, "command": command_id}, dev)
 
         local = self._local_server()
         local_device = {
             "identifiers": ["homelab_local_panel"],
-            "name": str(local.get("name") or local.get("title") or "Homelab Panel"),
+            "name": str(local["name"]),
             "manufacturer": "Homelab Panel",
             "model": "Local Panel Controls",
         }
@@ -126,8 +126,8 @@ class HomeAssistantIntegration:
         if not self.enabled() or not self._is_mqtt_connected():
             return
         cfg = self._config()
-        availability_topic = str(cfg.get("availability_topic", "homelab-panel/availability")).strip()
-        self._publish_direct(availability_topic, "online", qos=int(cfg.get("qos", 1)), retain=True)
+        availability_topic = str(cfg["availability_topic"]).strip()
+        self._publish_direct(availability_topic, "online", qos=int(cfg["qos"]), retain=True)
         self.publish_discovery()
         statuses = self._status_cache_snapshot()
         for device_id, device in self._remote_devices().items():
@@ -156,4 +156,4 @@ class HomeAssistantIntegration:
             "wol_active": self._wol_job_active(device_id),
         }
         cfg = self._config()
-        self._publish_direct(self.state_topic(device_id), json.dumps(payload, ensure_ascii=False, separators=(",", ":")), qos=int(cfg.get("qos", 1)), retain=True)
+        self._publish_direct(self.state_topic(device_id), json.dumps(payload, ensure_ascii=False, separators=(",", ":")), qos=int(cfg["qos"]), retain=True)

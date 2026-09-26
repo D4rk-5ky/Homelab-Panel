@@ -14,6 +14,8 @@ import time
 import uuid
 from datetime import datetime
 
+from shared_modules.mqtt import publish_message
+
 
 class PanelActionManager:
     """Execute configured local/remote actions while preserving safety guards."""
@@ -26,8 +28,7 @@ class PanelActionManager:
         scripts_dir,
         wol_broadcast,
         run_command,
-        mqtt_publish,
-        local_script_runner,
+        mqtt_config,
         ping_host,
         get_device_button,
         update_panel_job,
@@ -41,8 +42,7 @@ class PanelActionManager:
         self._scripts_dir = scripts_dir
         self._wol_broadcast = wol_broadcast
         self._run_command = run_command
-        self._mqtt_publish = mqtt_publish
-        self._local_script_runner = local_script_runner
+        self._mqtt_config = mqtt_config
         self._ping_host = ping_host
         self._get_device_button = get_device_button
         self._update_panel_job = update_panel_job
@@ -80,7 +80,7 @@ class PanelActionManager:
         button = next((b for b in self._local_server().get("buttons", []) if b["id"] == command), None)
         if not button:
             return False, "Ukendt lokal handling."
-        ok, message = self._local_script_runner(button["script"])
+        ok, message = self.run_local_script(button["script"])
         if ok:
             return True, f"Kørte lokalt script: {button['script']} -> {message}"
         return False, f"Lokalt script fejlede: {button['script']} -> {message}"
@@ -318,11 +318,10 @@ class PanelActionManager:
         if command == "cancel_wol":
             return self.cancel_wol_job(device_id, source)
 
-        resolved_command = {"shutdown": "shutdown_delay", "reboot": "reboot_delay"}.get(command, command)
         mqtt_cfg = device.get("mqtt_controls")
         if not mqtt_cfg:
             return False, f"Der er ingen MQTT-kontrol for {device['title']}"
-        button = self._get_device_button(device, resolved_command)
+        button = self._get_device_button(device, command)
         if not button:
             return False, f"Ukendt handling '{command}' for {device['title']}"
         topic = str(mqtt_cfg.get("topic", "")).strip()
@@ -330,11 +329,15 @@ class PanelActionManager:
         if not topic or not payload:
             return False, f"Ufuldstændig MQTT-konfiguration for handling '{command}'"
 
-        if bool(mqtt_cfg.get("json_jobs", False)):
-            wire_payload = json.dumps({"command": payload, "job_id": job_id, "source": source}, ensure_ascii=False, separators=(",", ":"))
-        else:
-            wire_payload = payload
-        ok, message = self._mqtt_publish(topic, wire_payload)
+        wire_payload = json.dumps(
+            {"command": payload, "job_id": job_id, "source": source},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        cfg = self._mqtt_config()
+        ok, message = publish_message(
+            cfg, topic, wire_payload, qos=int(cfg["qos"]), retain=bool(cfg["retain"])
+        )
         if ok:
             return True, f"MQTT command '{payload}' sendt til '{topic}'"
         return False, message

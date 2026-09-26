@@ -13,7 +13,7 @@ MQTT_CONFIG = {
     "pass": "",
     # Paho-publisherens QoS for remote kommandoer: 0, 1 eller 2.
     "qos": 0,
-    # Kun kommandoer: behold False, så gamle power-kommandoer ikke genafspilles.
+    # Kommandoer må ikke være retained, så de ikke genafspilles efter reconnect.
     "retain": False,
     "client_id_panel_status": "homelab-panel-status",
     "panel_control_topic": "homelab-panel/control",
@@ -45,7 +45,7 @@ HOME_ASSISTANT_CONFIG = {
 # ============================================================
 # VALGFRI WEB-LOGIN
 # ============================================================
-# enabled=False: ingen username/password-login; PANEL_TOKEN nedenfor kan stadig bruges.
+# enabled=False: ingen username/password-login.
 # enabled=True: alle web-sider og web-kontrolroutes kræver login-session.
 # Skift altid password og secret_key før enabled sættes til True.
 WEB_AUTH_CONFIG = {
@@ -56,10 +56,6 @@ WEB_AUTH_CONFIG = {
     # Sæt kun True når panelet tilgås via HTTPS. Ved almindelig HTTP skal den være False.
     "session_cookie_secure": False,
 }
-
-# Legacy query-string token. Bruges kun når WEB_AUTH_CONFIG["enabled"] er False.
-# Eksempel: http://panel:5000/?token=DIN_TOKEN
-PANEL_TOKEN = ""
 
 # Hvor længe MQTT online-status må være gammel før den ikke længere tæller som frisk.
 MQTT_ONLINE_TTL_SECONDS = 90

@@ -23,7 +23,7 @@ from test_home_assistant import load_panel
 
 
 class PublisherTests(unittest.TestCase):
-    """Check error handling, compatibility, and both production call sites."""
+    """Check shared MQTT transport, one-shot publishing, and production callers."""
 
     def client(self, reason=0, acknowledged=True):
         """Create a client whose first loop delivers a controlled CONNACK."""
@@ -114,19 +114,15 @@ class PublisherTests(unittest.TestCase):
                 self.assertFalse(publisher._publish_once({'host': 'broker'}, topic, 'data', **options)[0])
             build.assert_not_called()
 
-    def test_client_construction_supports_paho_callback_versions(self):
-        """New clients use API v2; older Paho keeps its original constructor."""
+    def test_client_construction_uses_current_paho_callback_api(self):
+        """Current clients require Paho callback API v2 and MQTT 3.1.1."""
         with patch.object(shared_mqtt.mqtt, 'Client') as client:
             client.return_value.connect.return_value = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
-            shared_mqtt.MqttClient({'host': 'broker'}).start(mode='connect')
+            shared_mqtt.MqttClient({'host': 'broker'}).start(mode='thread')
             self.assertTrue(client.call_args.kwargs['clean_session'])
             self.assertEqual(client.call_args.kwargs['callback_api_version'], shared_mqtt.mqtt.CallbackAPIVersion.VERSION2)
-        legacy = Mock(spec=['Client', 'MQTTv311'])
-        legacy.MQTTv311 = 4
-        legacy.Client.return_value.connect.return_value = 0
-        with patch.object(shared_mqtt, 'mqtt', legacy):
-            shared_mqtt.MqttClient({'host': 'broker'}).start(mode='connect')
-        legacy.Client.assert_called_once_with(clean_session=True, protocol=4)
+            self.assertEqual(client.call_args.kwargs['protocol'], shared_mqtt.mqtt.MQTTv311)
+            client.return_value.loop_start.assert_called_once()
 
     def test_shared_long_running_client_api(self):
         """Both components can use one shared lifecycle/subscription/message/publish API."""
@@ -143,7 +139,7 @@ class PublisherTests(unittest.TestCase):
                 on_connect=lambda: events.append(('connect',)),
                 on_disconnect=lambda reason: events.append(('disconnect', reason)),
                 on_message=lambda topic, payload, retain, qos: events.append(('message', topic, payload, retain, qos)),
-            ).start(mode='connect')
+            ).start(mode='thread')
         client.connect.assert_called_once_with('broker', 1884, keepalive=45)
         client.username_pw_set.assert_called_once_with('alice', 'secret')
         client.will_set.assert_called_once_with('status', payload='offline', qos=1, retain=True)
@@ -174,15 +170,23 @@ class PublisherTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn('timed out', message)
 
-    def test_panel_reuses_shared_publisher_and_config(self):
-        """Panel commands preserve their own QoS/retain settings and errors."""
+    def test_panel_actions_reuse_shared_publisher_and_current_json_envelope(self):
+        """Panel remote actions use the shared publisher with the current JSON job envelope."""
         panel = load_panel()
         panel.MQTT_CONFIG.update(qos=2, retain=False)
-        runtime_module = sys.modules[panel.MQTT_RUNTIME.__class__.__module__]
-        with patch.object(runtime_module, 'publish_message', return_value=(False, 'failed')) as publish, patch.object(panel, 'run_command') as run:
-            self.assertEqual(panel.mqtt_publish('device/control', 'wake'), (False, 'failed'))
-            publish.assert_called_once_with(panel.MQTT_CONFIG, 'device/control', 'wake', qos=2, retain=False)
-            run.assert_not_called()
+        action_module = sys.modules[panel.ACTION_MANAGER.__class__.__module__]
+        with patch.object(action_module, 'publish_message', return_value=(False, 'failed')) as publish:
+            self.assertEqual(
+                panel.ACTION_MANAGER.execute_remote_action(
+                    'aoostar_wtr', 'run_watchtower', job_id='job-1', source='test-suite'
+                ),
+                (False, 'failed'),
+            )
+        payload = json.loads(publish.call_args.args[2])
+        self.assertEqual(payload, {'command': 'run_watchtower', 'job_id': 'job-1', 'source': 'test-suite'})
+        publish.assert_called_once_with(
+            panel.MQTT_CONFIG, 'aoostar/control/power', publish.call_args.args[2], qos=2, retain=False
+        )
 
     def test_cli_reads_credentials_from_config_and_payload_from_stdin(self):
         """The shell bridge preserves whitespace and never needs password flags."""
