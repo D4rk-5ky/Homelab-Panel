@@ -308,7 +308,7 @@ class PanelActionManager:
             job_id=job_id, job_status="failure",
         )
 
-    def execute_remote_action(self, device_id: str, command: str, job_id: str = "", source: str = "Homelab Panel") -> tuple[bool, str]:
+    def execute_remote_action(self, device_id: str, command: str, job_id: str = "", *, source: str) -> tuple[bool, str]:
         """Resolve one configured remote action and publish only its allow-listed payload."""
         device = self._remote_devices().get(device_id)
         if not device:

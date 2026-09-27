@@ -361,12 +361,10 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 | Function / method | What / why |
 |---|---|
 | `MqttClient.__init__()` | Stores common broker settings, optional client ID/LWT/subscription provider/component callbacks and reconnect policy without knowing panel/control behavior. |
-| `MqttClient._reason_value()` | Normalizes current Paho callback reason-code values to integers when possible so success/error handling is consistent. |
-| `MqttClient._reason_text()` | Produces stable human-readable connection/disconnection reasons. |
 | `MqttClient._build_client()` | The single Paho client-construction path: MQTT 3.1.1, required callback API v2, auth, LWT, reconnect delay and shared callbacks. |
 | `MqttClient._subscription_items()` | Resolves the current static/callable iterable of `(topic, qos)` pairs into unique sorted subscriptions; obsolete string-only subscription entries are not accepted. |
-| `MqttClient._handle_connect()` | Shared Paho API-v2 connect callback: records state, subscribes current topics, then invokes the component's transport-independent post-connect hook. |
-| `MqttClient._handle_disconnect()` | Shared Paho API-v2 disconnect callback: updates state/reason and invokes the component hook. |
+| `MqttClient._handle_connect()` | Shared Paho API-v2 connect callback: compares the current `ReasonCode` directly with success, subscribes current topics, then invokes the component's transport-independent post-connect hook. |
+| `MqttClient._handle_disconnect()` | Shared Paho API-v2 disconnect callback: clears connected state and passes the current reason text to the component hook. |
 | `MqttClient._handle_message()` | Decodes Paho bytes once and invokes every component with the same `(topic, payload, retain, qos)` shape. |
 | `MqttClient.start()` | Starts one current long-running mode: blocking `forever`, background `thread`, or reconnecting `async_thread`; broker/port/keepalive come from component settings. |
 | `MqttClient.publish()` | Common publish path for long-running clients, including Paho immediate status and optional completion wait. |
@@ -384,15 +382,14 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 | Function / method | What / why |
 |---|---|
 | `PublisherTests.client()` | Builds a controllable Paho test double with chosen CONNACK and acknowledgement behavior. |
-| `connect_callback()` | Delivers a current API-v2 connect callback without a real broker. |
 | `test_settings_payload_qos_and_retention_are_preserved()` | Verifies auth/port/exact payload/QoS 0-2/retain and no reconnect/background loop for one-shot sends. |
-| `test_default_command_is_nonretained_and_unauthenticated()` | Verifies optional auth and non-retained command defaults. |
+| `connect_once()` *(nested in `PublisherTests.client`)* | Delivers the configured fake CONNACK from the client builder without adding a separate reusable test API. |
+| `test_unauthenticated_publish_uses_explicit_nonretained_command_settings()` | Verifies optional broker authentication while using the same explicit command QoS/retain values supplied by current production callers. |
 | `test_refused_connection_never_publishes()` | Ensures a rejected broker connection sends no command. |
 | `test_connect_exception_and_publish_error_fail()` | Propagates socket and Paho publish failures. |
 | `test_timeout_closes_socket_before_disconnect_without_retry()` | Verifies uncertain one-shot delivery closes hard and is never retried. |
 | `test_invalid_inputs_fail_before_connecting()` | Rejects invalid topic/QoS/deadline before client construction. |
-| `test_client_construction_uses_current_paho_callback_api()` | Requires Paho callback API v2 and MQTT 3.1.1 for the shared client. |
-| `test_shared_long_running_client_api()` | Exercises shared auth/LWT/subscriptions/decoded callback/publish/disconnect behavior used by both components. |
+| `test_shared_long_running_client_api()` | Exercises the one shared long-running client path, including Paho callback API v2/MQTT 3.1.1 construction, auth/LWT, subscriptions, decoded callbacks, publish, and disconnect behavior used by both components. |
 | `test_parent_bounds_worker_and_keeps_credentials_off_argv()` | Verifies the hard parent timeout and stdin-only request carrying credentials/payload. |
 | `test_panel_actions_reuse_shared_publisher_and_current_json_envelope()` | Verifies panel remote actions call shared `publish_message()` with current `command`/`job_id`/`source` JSON. |
 | `test_cli_reads_credentials_from_config_and_payload_from_stdin()` | Verifies CLI config/payload handling and publication exit status. |

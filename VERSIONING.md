@@ -24,6 +24,20 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.22 — 2026-09-26
+
+### Remove test-only API surface and redundant test scaffolding
+
+- Audited production symbols twice: once against production callers only and once including `tests/`. No complete production function remained solely because a test referenced it; framework callbacks/routes and injected callbacks were checked separately so indirect runtime use was not mistaken for dead code.
+- Removed optional/default call forms that current production never uses: `MqttClient.start()` now requires an explicit lifecycle mode, long-running `MqttClient.publish()` and `publish_message()` require explicit QoS/retain values, the private one-shot worker requires its full request fields, panel MQTT cache/direct-publish helpers require the retain/QoS values supplied by their only runtime callers, the status indicator requires explicit text defaults and publish QoS/retain, and remote action dispatch requires an explicit `source`.
+- Removed the test-only `cli_main(argv=...)` injection surface. The MQTT CLI now always parses the real process `sys.argv`; tests patch `sys.argv` and therefore exercise the same entry path used by shell/service callers.
+- Simplified current Paho-v2 reason handling by comparing callback `ReasonCode` directly with zero and using its string form for errors, as supported by Paho callback API v2. This removed the unused `_reason_value()` / `_reason_text()` normalization layer.
+- Removed redundant test scaffolding: the separate callback-delivery helper is now local to the fake client builder, and the standalone client-construction test was merged into the existing shared long-running-client test instead of constructing the same transport twice. Tests that previously depended on implicit MQTT defaults now supply the same explicit QoS/retain values as production callers.
+- Re-ran the caller/default audit after cleanup. The only reported remaining default that appears syntactically always supplied is `run_command(timeout=20)`, but it is genuinely used through the injected `PanelActionManager` callback, which calls it without a timeout; it is therefore retained.
+- Component independence is unchanged: panel and control still do not import each other, and `shared_modules/mqtt.py` remains the only shared Python implementation.
+- Production Python/shell source is **3,501 lines**, down from **3,523** in 0.0.21. Test source is **591 lines**, down from **596**. The release contains **163 production functions** and **200 Python/shell functions including tests**.
+- The source manifest remains exactly **34 project paths**; no source file was added or removed. Version advances exactly from 0.0.21 to 0.0.22.
+
 ## 0.0.21 — 2026-09-26
 
 ### Current-code-only cleanup and dead/legacy path removal

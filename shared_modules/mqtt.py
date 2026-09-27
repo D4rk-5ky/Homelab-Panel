@@ -25,28 +25,7 @@ class MqttClient:
         self.reconnect_min, self.reconnect_max = reconnect_min, reconnect_max
         self.client = None
         self.connected = False
-        self.connection_reason = ""
         self.loop_mode = ""
-
-    @staticmethod
-    def _reason_value(reason) -> int | None:
-        try:
-            return int(reason)
-        except (TypeError, ValueError):
-            try:
-                return int(getattr(reason, "value", None))
-            except (TypeError, ValueError):
-                return None
-
-    @staticmethod
-    def _reason_text(reason) -> str:
-        value = MqttClient._reason_value(reason)
-        if value is None:
-            return str(reason or "")
-        try:
-            return mqtt.error_string(value)
-        except Exception:
-            return str(value)
 
     def _build_client(self):
         client = mqtt.Client(
@@ -80,11 +59,10 @@ class MqttClient:
 
     def _handle_connect(self, client, userdata, flags, reason_code, properties):
         self.client = client
-        self.connected = self._reason_value(reason_code) in (None, 0)
-        self.connection_reason = "" if self.connected else self._reason_text(reason_code)
+        self.connected = reason_code == 0
         if not self.connected:
             if self.on_disconnect:
-                self.on_disconnect(self.connection_reason)
+                self.on_disconnect(str(reason_code))
             return
         for topic, qos in self._subscription_items():
             client.subscribe(topic, qos=qos)
@@ -92,16 +70,16 @@ class MqttClient:
             self.on_connect()
 
     def _handle_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
-        self.connected, self.connection_reason = False, self._reason_text(reason_code)
+        self.connected = False
         if self.on_disconnect:
-            self.on_disconnect(self.connection_reason)
+            self.on_disconnect(str(reason_code))
 
     def _handle_message(self, client, userdata, message):
         if self.on_message:
             self.on_message(str(message.topic), message.payload.decode("utf-8", errors="replace").strip(),
                             bool(getattr(message, "retain", False)), int(getattr(message, "qos", 0)))
 
-    def start(self, *, mode: str = "forever"):
+    def start(self, *, mode: str):
         if self.client is None:
             self.client = self._build_client()
         self.loop_mode = mode
@@ -120,7 +98,7 @@ class MqttClient:
                 raise ValueError(f"Unsupported MQTT connection mode: {mode}")
         return self
 
-    def publish(self, topic: str, payload: str, *, qos: int = 0, retain: bool = False,
+    def publish(self, topic: str, payload: str, *, qos: int, retain: bool,
                 wait_timeout: float | None = None) -> bool:
         if self.client is None or not self.connected or not topic:
             return False
@@ -148,8 +126,8 @@ class MqttClient:
             pass
 
 
-def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
-                  retain: bool = False, timeout: float = 20) -> tuple[bool, str]:
+def _publish_once(settings: dict, topic: str, payload: str, *, qos: int,
+                  retain: bool, timeout: float) -> tuple[bool, str]:
     """Publish once with no reconnect/retry; close hard on uncertain failure."""
     client = None
     published = publish_started = False
@@ -185,7 +163,7 @@ def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
 
         while connection_result is None:
             network_step()
-        if MqttClient._reason_value(connection_result) not in (None, 0):
+        if connection_result != 0:
             raise RuntimeError(f"MQTT broker rejected connection: {connection_result}")
         if time.monotonic() >= deadline:
             raise TimeoutError("MQTT operation timed out before publication")
@@ -216,8 +194,8 @@ def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
                 pass
 
 
-def publish_message(settings: dict, topic: str, payload: str, *, qos: int = 0,
-                    retain: bool = False, timeout: float = 20) -> tuple[bool, str]:
+def publish_message(settings: dict, topic: str, payload: str, *, qos: int,
+                    retain: bool, timeout: float = 20) -> tuple[bool, str]:
     """Run the disposable publisher worker under a hard parent-process timeout."""
     try:
         timeout = float(timeout)
@@ -241,7 +219,7 @@ def publish_message(settings: dict, topic: str, payload: str, *, qos: int = 0,
         return False, f"MQTT publication failed: {exc}"
 
 
-def cli_main(argv=None) -> int:
+def cli_main() -> int:
     """Run the standalone one-shot MQTT CLI used by shell/service callers."""
     parser = argparse.ArgumentParser(description="One-shot MQTT publisher")
     source = parser.add_mutually_exclusive_group(required=True)
@@ -253,7 +231,7 @@ def cli_main(argv=None) -> int:
     parser.add_argument("--retain", action="store_true", help="Retain telemetry at the broker; never use for commands")
     parser.add_argument("--timeout", type=float, default=20,
                         help="Total publication timeout in seconds (default: 20; must be positive)")
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
     if args.request_stdin:
         try:
             response = _publish_once(**json.load(sys.stdin))
