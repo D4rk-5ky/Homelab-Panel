@@ -11,7 +11,9 @@ MQTT_CONFIG = {
     "port": 1883,
     "user": "",
     "pass": "",
+    # Paho-publisherens QoS for remote kommandoer: 0, 1 eller 2.
     "qos": 0,
+    # Kommandoer må ikke være retained, så de ikke genafspilles efter reconnect.
     "retain": False,
     "client_id_panel_status": "homelab-panel-status",
     "panel_control_topic": "homelab-panel/control",
@@ -23,7 +25,7 @@ MQTT_CONFIG = {
 # Når enabled=True opretter Homelab Panel automatisk MQTT Discovery entities
 # for hver REMOTE_DEVICES-enhed, alle mqtt_controls.buttons og LOCAL_SERVER.buttons.
 # WoL-knapper bruger samme label som websiden. Genstart panelet efter ændringer
-# i devices.py; Home Assistant-knapperne oprettes uden manuel YAML.
+# i configs/devices.py; Home Assistant-knapperne oprettes uden manuel YAML.
 # Ingen Home Assistant-konfiguration er nødvendig ud over en fungerende MQTT
 # integration der bruger samme broker.
 HOME_ASSISTANT_CONFIG = {
@@ -43,7 +45,7 @@ HOME_ASSISTANT_CONFIG = {
 # ============================================================
 # VALGFRI WEB-LOGIN
 # ============================================================
-# enabled=False: ingen username/password-login; PANEL_TOKEN nedenfor kan stadig bruges.
+# enabled=False: ingen username/password-login.
 # enabled=True: alle web-sider og web-kontrolroutes kræver login-session.
 # Skift altid password og secret_key før enabled sættes til True.
 WEB_AUTH_CONFIG = {
@@ -55,15 +57,12 @@ WEB_AUTH_CONFIG = {
     "session_cookie_secure": False,
 }
 
-# Legacy query-string token. Bruges kun når WEB_AUTH_CONFIG["enabled"] er False.
-# Eksempel: http://panel:5000/?token=DIN_TOKEN
-PANEL_TOKEN = ""
-
 # Hvor længe MQTT online-status må være gammel før den ikke længere tæller som frisk.
 MQTT_ONLINE_TTL_SECONDS = 90
 
 # Hvor ofte baggrundsmonitoren pinger enheder, registrerer state transitions,
-# opdaterer job/WoL confirmation og publicerer Home Assistant state.
+# opdaterer status-cache og publicerer Home Assistant state.
+# WoL/power-confirmation kører i deres egne baggrundstråde.
 STATUS_MONITOR_INTERVAL_SECONDS = 10
 
 # Auto refresh i browseren.

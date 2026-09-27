@@ -1,12 +1,9 @@
-# HomeLab panel
-homelab-panel/config*
-homelab-panel/devices*
-!homelab-panel/config.example.py
-!homelab-panel/devices.example.py
+# HomeLab panel active configs
+homelab-panel/configs/config.py
+homelab-panel/configs/devices.py
 
-# HomeLab Control
-homelab-control/config*
-!homelab-control/config.example.json
+# HomeLab Control active config
+homelab-control/configs/config.json
 
 # Runtime state/logs
 homelab-panel/state/

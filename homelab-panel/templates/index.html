@@ -46,7 +46,7 @@
 
   <div class="account-bar">
     <div class="account-actions">
-      <a class="nav-link" href="{{ url_for('mqtt_diagnostics', token=token) }}">📡 MQTT diagnostics</a>
+      <a class="nav-link" href="{{ url_for('mqtt_diagnostics') }}">📡 MQTT diagnostics</a>
     </div>
     {% if web_auth_enabled %}
       <div class="account-actions">
@@ -83,9 +83,9 @@
           <div class="status-line">Sidst opdateret: {{ st['last_updated'] }}</div>
           {% if st['ip'] %}<div class="status-line">IP: {{ st['ip'] }}</div>{% endif %}
           {% if st['active_jobs'] %}<div class="status-line">Aktive jobs: {{ st['active_jobs']|length }}</div>{% endif %}
-          <a class="history-link" href="{{ url_for('device_history', device_id=device_id, token=token) }}">🕘 Historik</a>
+          <a class="history-link" href="{{ url_for('device_history', device_id=device_id) }}">🕘 Historik</a>
           {% if st['wol_active'] %}
-            <form method="post" action="{{ url_for('wol_cancel', device_id=device_id, token=token) }}">
+            <form method="post" action="{{ url_for('wol_cancel', device_id=device_id) }}">
               <button class="danger small-button" type="submit">⛔ Annullér Wake-on-LAN</button>
             </form>
           {% endif %}
@@ -125,7 +125,8 @@
     <div class="wol-grid">
       {% for device_id, device in remote_devices.items() %}
         {% if device.wol and device.wol.enabled %}
-          <form method="post" action="{{ url_for('wol', device_id=device_id, token=token) }}" {% if device.wol.confirm %}onsubmit="return confirm('{{ device.wol.confirm }}');"{% endif %}>
+          {% set confirm_text = resolve_confirmation_text(device.wol.confirm, device.title) %}
+          <form method="post" action="{{ url_for('wol', device_id=device_id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
             <button class="ok" type="submit">⚡ {{ device.wol.label }}</button>
           </form>
         {% endif %}
@@ -139,7 +140,8 @@
         <h2>🔌 {{ device.mqtt_controls.title }}</h2>
         <div class="grid">
           {% for button in device.mqtt_controls.buttons %}
-            <form method="post" action="{{ url_for('mqtt_button', device_id=device_id, button_id=button.id, token=token) }}" {% if button.confirm %}onsubmit="return confirm('{{ button.confirm }}');"{% endif %}>
+            {% set confirm_text = resolve_confirmation_text(button.confirm, device.title) %}
+            <form method="post" action="{{ url_for('mqtt_button', device_id=device_id, button_id=button.id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
               <button class="{{ button.color|default('neutral') }}" type="submit">{{ button.icon|default('▶️') }} {{ button.label }}</button>
             </form>
           {% endfor %}
@@ -152,7 +154,8 @@
     <h2>🖥️ {{ local_server.title }}</h2>
     <div class="grid">
       {% for button in local_server.buttons %}
-        <form method="post" action="{{ url_for('local_button', button_id=button.id, token=token) }}" {% if button.confirm %}onsubmit="return confirm('{{ button.confirm }}');"{% endif %}>
+        {% set confirm_text = resolve_confirmation_text(button.confirm, local_server.title) %}
+        <form method="post" action="{{ url_for('local_button', button_id=button.id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
           <button class="{{ button.color }}" type="submit">{{ button.icon }} {{ button.label }}</button>
         </form>
       {% endfor %}

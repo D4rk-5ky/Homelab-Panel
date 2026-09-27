@@ -1,90 +1,169 @@
-# Homelab Panel 0.0.12 — validation
+# Homelab Panel 0.0.21 — validation
 
-## Result
+## Result and scope
 
-Version 0.0.12 was created from the user-provided **0.0.11** baseline. The release keeps the same **26 project paths**: no original path was removed or renamed and no new runtime/source path was added. Eight baseline files are updated for the feature, release metadata, documentation, tests, and validation; all other files remain byte-for-byte unchanged.
+Created **0.0.21** from the packaged **0.0.20** baseline after a function-by-function and current-path audit of the panel, Homelab Control agents, shared MQTT implementation, shell helpers, templates, examples, and tests.
 
-Original 0.0.11 archive SHA-256: `e3e68ccd77207c82eb76b66d2656f44366c4878f08dd7ebb074e69af864b6e08`.
+The goal was to remove code that exists only for older layouts/protocols/callers and to remove dead delegation/duplicate paths without removing current functionality. Component independence remains a hard boundary:
 
-## What changed
+- `homelab-panel` may use its own modules plus root `shared_modules.mqtt`;
+- `homelab-control` may use its own files/modules plus root `shared_modules.mqtt`;
+- neither component imports the other component;
+- `shared_modules/mqtt.py` remains the only shared Python implementation between them.
 
-- Added optional `LOCAL_SERVER["name"]` as the local **Home Assistant device name**.
-- Kept `LOCAL_SERVER["title"]` as the Homelab Panel webpage section title.
-- Local HA MQTT discovery now prefers `LOCAL_SERVER.name`; older active `devices.py` files without the new key fall back to `LOCAL_SERVER.title`, then `"Homelab Panel"`.
-- Local button labels still come from each existing button `label`. Home Assistant therefore has a real device name to combine with the button name, matching the naming pattern used by remote devices.
-- Discovery topic `homelab_local_panel`, identifiers, unique IDs, command payloads, scripts, allow-listing, auth/token checks, retained-command rejection, shutdown/reboot delays, and all remote-device behavior are unchanged.
+No project path was added or removed in 0.0.21. The release keeps the same **34 tracked source files** as 0.0.20.
 
-## Checks completed
+## Function/caller audit
 
-Environment: Linux 6.18.44 x86_64, Python 3.13.5.
+The final source contains:
 
-- Compiled all **6 Python source/test files** in memory with Python `compile()` successfully.
-- Passed `bash -n` for all **6 shell files**.
-- Parsed `homelab-control/config.example.json` successfully.
-- Parsed all **4 Jinja templates** successfully.
-- `systemd-analyze verify` passed for all **3 supplied service files**.
-- Compared top-level function ASTs in `homelab-panel/app.py` against 0.0.11: **only `publish_home_assistant_discovery()` changed**. Existing execution, authentication, WoL, power-confirmation, MQTT dispatch, and script-safety functions are unchanged.
-- Ran a targeted import/execution check of the real `app.py` discovery path with temporary dependency stubs and all external thread/network work blocked. It verified all four local buttons publish `device.name = LOCAL_SERVER["name"]`, and verified the old-config fallback to `LOCAL_SERVER["title"]`.
-- Added project regression assertions for explicit local HA device naming and a dedicated fallback test for old configs.
-- Confirmed the README disclaimer/liability and AI-assisted disclaimer text remains unchanged from 0.0.11.
-- Verified the final project tree contains no `__pycache__`, `.pyc`, `.pyo`, build-cache, dependency-environment, active-config, runtime-state, log, or temporary files.
+- **152 production Python functions/methods**;
+- **13 production shell functions**;
+- **165 production functions total**;
+- **203 Python/shell functions including tests**.
 
-## Full regression-suite limitation
+Every remaining production function was checked against direct callers, callback registration, thread targets, Flask decorators, or executable entry-point use.
 
-`python3 -B -m unittest discover -s tests -v` could not run in this execution environment because `paho-mqtt` and Flask are not installed. The suite stops during import at `ModuleNotFoundError: No module named 'paho'`. A temporary `pip --target` installation of Flask and Paho was attempted outside the project, but the environment has no working package-index/DNS access, so no dependencies could be downloaded.
+Only five production Python names occur only at their definition site:
 
-This is an environment limitation rather than a failing project assertion. The new discovery behavior was still exercised through the targeted dependency-stub check described above.
+- `require_web_login()` — Flask `@app.before_request` hook;
+- `device_history()` — Flask route;
+- `wol_cancel()` — Flask route;
+- `mqtt_button()` — Flask route;
+- `local_button()` — Flask route.
 
-## Not fully tested
+These are framework-registered entry points, not dead code. Every shell function has a current call site. `commented_code_map.md` contains every one of the **203** Python/shell function names present in the final release.
 
-- No live Home Assistant instance or MQTT broker was connected, so final device/entity presentation in a live HA registry still requires deployment verification.
-- No real Wake-on-LAN, shutdown, reboot, sudo/root action, or remote custom job was executed.
-- The full Flask/Paho regression suite could not execute because those dependencies are unavailable in this environment.
-- No interactive browser layout test was run; templates themselves are unchanged and parse successfully.
+A normalized AST comparison found **zero exact duplicate production Python function bodies** after cleanup. A separate AST name-use pass found **zero unused top-level imports or simple top-level aliases/assignments** in executable production modules.
 
-## Upgrade note
+## Removed legacy/dead paths
 
-Existing active `homelab-panel/devices.py` files continue to work without modification. To give the local Home Assistant device a distinct host name, add `name` next to `title`, for example:
+The audit removed code that is not part of the current project behavior:
 
-```python
-LOCAL_SERVER = {
-    "title": "Lokal enhedskontrol",
-    "name": "Mac Mini",
-    "buttons": [
-        # existing buttons unchanged
-    ],
-}
+- app-level mirror/delegate functions around `PanelActionManager`, `PanelMqttRuntime`, and `HomeAssistantIntegration`;
+- app-level duplicate MQTT cache/connectivity aliases;
+- the old query-string `PANEL_TOKEN` web-access path;
+- derived/sibling MQTT status-topic compatibility helpers;
+- delayed-command `shutdown`/`reboot` aliases and implicit old power-category inference;
+- implicit/default remote panel-control targeting;
+- `json_jobs` and plain-text Homelab Control command handling;
+- old string-valued command allow-list entries;
+- generation of missing remote `job_id`/`source` fields;
+- pre-current boot-history migration/archive helpers;
+- duplicate Python `load_config()` wrappers;
+- unused status-indicator log-directory ownership;
+- shell `json_get_optional()` and invalid-history-limit fallback;
+- Paho callback API v1 constructor support and public callback aliases;
+- flexible string subscription formats;
+- the unused shared MQTT `connect`-only lifecycle mode;
+- no-op command aliases and other variables/helpers whose only purpose was compatibility with earlier internal layouts.
+
+Searches of current source/docs/tests confirm that removed knobs/surfaces such as `PANEL_TOKEN`, `json_jobs`, `derive_related_topic`, `homelab_mqtt.py`, old MQTT callback compatibility names, and the connect-only mode are no longer referenced outside historical `VERSIONING.md` entries.
+
+## Current behavior made explicit
+
+0.0.21 supports only the current project formats:
+
+- web access is either open when `WEB_AUTH_CONFIG.enabled` is false or uses the configured Flask session login;
+- panel-control MQTT envelopes require explicit `target="remote"` or `target="local"`;
+- direct remote-agent commands require JSON with non-empty `command`, `job_id`, and `source`;
+- Homelab Control command allow-list entries are objects, not legacy strings;
+- device status topics are explicit config fields rather than derived sibling-topic fallbacks;
+- `LOCAL_SERVER["name"]` is required for the local Home Assistant device name;
+- `shared_modules/mqtt.py` requires Paho callback API v2 / `paho-mqtt` 2.x+;
+- the shared long-running MQTT client supports only current production modes: `forever`, `thread`, and `async_thread`.
+
+Current robustness that is still useful—malformed runtime-state handling, allow-list validation, path containment, process timeouts, atomic writes, MQTT timeout/no-retry behavior, and safe display defaults—was retained. Those are current safety/recovery behaviors rather than historical compatibility.
+
+## Codebase reduction
+
+Production Python/shell source was counted with the same method on both releases, excluding tests:
+
+- 0.0.20: **4,018 lines** across 18 production Python/shell files;
+- 0.0.21: **3,523 lines** across the same 18 files;
+- net reduction: **495 lines**.
+
+The project therefore became smaller without creating additional modules or cross-component imports.
+
+## Component boundary checks
+
+Passed:
+
+- no Python import from `homelab-panel` into `homelab-control`;
+- no Python import from `homelab-control` into `homelab-panel`;
+- only `shared_modules/mqtt.py` imports `paho.mqtt.client` or constructs `mqtt.Client` in production code;
+- panel-specific MQTT cache/routing/HA behavior stays in `homelab-panel/modules/panel_mqtt.py`;
+- control-specific job execution/status behavior stays in `homelab-control`;
+- no additional root shared implementation module was created.
+
+An independent smoke check from `/tmp` loaded the two Homelab Control Python entry points and panel module code using temporary current-format configs/stubs, verified current JSON command requirements, current object command specs, shared power-script resolution, and panel/control independence. Temporary active config files were removed after the check.
+
+## Static and structure checks
+
+Passed on the final source tree:
+
+- all **14 Python files** compile in memory with bytecode writing disabled;
+- all **6 shell files** pass `bash -n`;
+- all **3 embedded Python heredocs** compile;
+- all **4 Jinja templates** parse;
+- `homelab-control/configs/config.example.json` parses as JSON;
+- all **3 systemd unit examples** contain `[Unit]`, `[Service]`, `[Install]`, and `ExecStart=`;
+- the shared MQTT CLI imports under an isolated current-Paho stub and `--help` exposes `--config`, `--topic`, `--qos`, `--retain`, `--timeout`, and `--request-stdin`;
+- no current executable production module has an unused top-level import/simple alias reported by the AST audit;
+- no exact normalized duplicate production Python function body remains;
+- no `__pycache__`, `.pyc`, or `.pyo` remains after validation cleanup.
+
+## Focused shared-MQTT regression tests
+
+The offline current-Paho compatibility fixture is test-only and is not included in the release.
+
+The focused MQTT publisher/client/CLI/shell regression set passed **12/12** after the cleanup. It covers:
+
+- configured auth/port/payload/QoS/retain handling;
+- unauthenticated default publication;
+- refused connections and publish/connect failures;
+- hard timeout close/disconnect behavior with no automatic command retry;
+- invalid input rejection before network creation;
+- current Paho callback API v2 client construction;
+- shared long-running `MqttClient` authentication/LWT/subscriptions/normalized message callbacks/publish/disconnect behavior;
+- bounded parent-worker handling with credentials kept off argv;
+- CLI config/stdin handling and CLI errors/help;
+- the real shell bridge calling the shared MQTT module.
+
+Result:
+
+```text
+Ran 12 tests in 30.793s
+OK
 ```
 
-After changing `devices.py`, restart Homelab Panel so MQTT discovery is republished. Existing retained Home Assistant discovery uses the same local identifier and entity unique IDs, so this changes the device name rather than intentionally creating a second local device.
+## Full test-suite limitation
 
-## File comparison against 0.0.11
+The normal command was attempted on the final source without stubs:
 
-| Project-relative file | Status |
-|---|---|
-| `.gitignore` | Unchanged |
-| `README.md` | Updated |
-| `VALIDATION.md` | Updated |
-| `VERSION` | Updated |
-| `VERSIONING.md` | Updated |
-| `commented_code_map.md` | Updated |
-| `homelab-control/config.example.json` | Unchanged |
-| `homelab-control/homelab-control-command-listener.service` | Unchanged |
-| `homelab-control/homelab-control-status-indicator.service` | Unchanged |
-| `homelab-control/homelab_control_command_listener.py` | Unchanged |
-| `homelab-control/homelab_control_lib.sh` | Unchanged |
-| `homelab-control/homelab_control_status_indicator.py` | Unchanged |
-| `homelab-panel/app.py` | Updated |
-| `homelab-panel/config.example.py` | Unchanged |
-| `homelab-panel/devices.example.py` | Updated |
-| `homelab-panel/homelab-controll.service` | Unchanged |
-| `homelab-panel/templates/history.html` | Unchanged |
-| `homelab-panel/templates/index.html` | Unchanged |
-| `homelab-panel/templates/login.html` | Unchanged |
-| `homelab-panel/templates/mqtt_diagnostics.html` | Unchanged |
-| `scripts/homelab_action_common.sh` | Unchanged |
-| `scripts/reboot_cancel.sh` | Unchanged |
-| `scripts/reboot_delay.sh` | Unchanged |
-| `scripts/shutdown_cancel.sh` | Unchanged |
-| `scripts/shutdown_delay.sh` | Unchanged |
-| `tests/test_home_assistant.py` | Updated |
+```bash
+python3 -B -m unittest discover -s tests -v
+```
+
+It cannot run in this sandbox because the real `paho-mqtt` package is not installed. Both test modules stop during import with `ModuleNotFoundError: No module named 'paho'`. Flask is also absent, so the real Flask-based panel tests cannot be rerun here.
+
+The focused offline results above are therefore reported separately and are **not** represented as a full real-dependency suite pass.
+
+## Not exercised against live infrastructure
+
+No production MQTT broker, Home Assistant instance, remote Homelab Control host, Wake-on-LAN target, shutdown/reboot action, or live systemd service was contacted or changed during validation.
+
+## Packaging checks
+
+Passed on the final release archive:
+
+- the **34-path** source manifest is identical to 0.0.20: no project path was added or removed;
+- only intended source/docs/tests files differ from the baseline;
+- no active private configs (`homelab-panel/configs/config.py`, `homelab-panel/configs/devices.py`, `homelab-control/configs/config.json`);
+- no `__pycache__`, `.pyc`, `.pyo`, runtime state/logs, build cache, or temporary files;
+- no duplicate ZIP member names;
+- ZIP integrity passes;
+- extracted-file SHA-256 values equal the release tree;
+- extracted Unix permissions equal the release tree.
+
+The final archive SHA-256 is recorded in the release response after packaging.

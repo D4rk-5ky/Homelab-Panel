@@ -8,12 +8,15 @@ import threading
 import time
 from datetime import datetime
 
-import paho.mqtt.client as mqtt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from shared_modules.mqtt import MqttClient
 STATE_DIR = os.path.join(BASE_DIR, "state")
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")
 
 ACTION_FILE = os.path.join(STATE_DIR, "action")
 LAST_COMMAND_FILE = os.path.join(STATE_DIR, "last_command")
@@ -27,18 +30,9 @@ stop_event = threading.Event()
 mqtt_client = None
 
 
-def load_config() -> dict:
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+    CONFIG = json.load(f)
 
-
-CONFIG = load_config()
-
-MQTT_HOST = CONFIG["mqtt"]["host"]
-MQTT_PORT = CONFIG["mqtt"]["port"]
-MQTT_USER = CONFIG["mqtt"]["user"]
-MQTT_PASS = CONFIG["mqtt"]["pass"]
-MQTT_KEEPALIVE = CONFIG["mqtt"]["keepalive"]
 
 CLIENT_ID = CONFIG["client_ids"]["status"]
 HOSTNAME = socket.gethostname()
@@ -52,39 +46,17 @@ TOPIC_LAST_RESULT = CONFIG["topics"]["status_last_result"]
 TOPIC_LAST_MESSAGE = CONFIG["topics"]["status_last_message"]
 TOPIC_LAST_UPDATED = CONFIG["topics"]["status_last_updated"]
 
-def derive_related_topic(explicit_key: str, suffix: str) -> str:
-    explicit = str(CONFIG["topics"].get(explicit_key, "")).strip()
-    if explicit:
-        return explicit
-    last_message_topic = str(CONFIG["topics"].get("status_last_message", "")).strip()
-    marker = "/last_message"
-    if last_message_topic.endswith(marker):
-        return last_message_topic[:-len(marker)] + suffix
-    return ""
+TOPIC_HISTORY = CONFIG["topics"]["status_history"]
+TOPIC_BOOT_ID = CONFIG["topics"]["status_boot_id"]
+TOPIC_BOOT_TIME = CONFIG["topics"]["status_boot_time"]
 
-def derive_history_topic() -> str:
-    explicit = str(CONFIG["topics"].get("status_history", "")).strip()
-    if explicit:
-        return explicit
-
-    last_message_topic = str(CONFIG["topics"].get("status_last_message", "")).strip()
-    suffix = "/last_message"
-    if last_message_topic.endswith(suffix):
-        return last_message_topic[:-len(suffix)] + "/history"
-    return ""
-
-
-TOPIC_HISTORY = derive_history_topic()
-TOPIC_BOOT_ID = derive_related_topic("status_boot_id", "/boot_id")
-TOPIC_BOOT_TIME = derive_related_topic("status_boot_time", "/boot_time")
 
 PUBLISH_UPTIME_EVERY = CONFIG["timing"]["publish_uptime_every"]
-HISTORY_MAX_ENTRIES = max(1, int(CONFIG["timing"].get("history_max_entries", 100)))
+HISTORY_MAX_ENTRIES = max(1, int(CONFIG["timing"]["history_max_entries"]))
 
 
 def ensure_dirs() -> None:
     os.makedirs(STATE_DIR, exist_ok=True)
-    os.makedirs(LOG_DIR, exist_ok=True)
 
 
 def read_text_file(path: str, default: str = "") -> str:
@@ -140,15 +112,6 @@ def get_boot_time_iso() -> str:
     return datetime.fromtimestamp(boot_epoch).isoformat(timespec="seconds")
 
 
-def parse_timestamp(value: str) -> float | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value).timestamp()
-    except ValueError:
-        return None
-
-
 def load_history() -> list[dict]:
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -173,65 +136,10 @@ def save_history(entries: list[dict]) -> None:
     os.replace(tmp, HISTORY_FILE)
 
 
-def current_command_record() -> dict | None:
-    command = read_text_file(LAST_COMMAND_FILE, "none")
-    result = read_text_file(LAST_RESULT_FILE, "none")
-    message = read_text_file(LAST_MESSAGE_FILE, "")
-    timestamp = read_text_file(LAST_UPDATED_FILE, "")
-
-    command_empty = command.lower() in {"", "none", "unknown"}
-    result_empty = result.lower() in {"", "none", "unknown"}
-    message_empty = message in {"", "No command executed yet", "No command executed in current boot"}
-
-    if command_empty and result_empty and message_empty:
-        return None
-
-    now = datetime.now().isoformat(timespec="seconds")
-    return {
-        "timestamp": timestamp or now,
-        "archived_at": now,
-        "command": command,
-        "result": result,
-        "message": message,
-        "source": "Remote enhed",
-        "category": "power",
-        "event_type": "command_status",
-        "severity": "error" if result.lower() == "failure" else "info",
-    }
-
-
-def history_record_signature(record: dict) -> tuple[str, str, str, str]:
-    return (
-        str(record.get("timestamp", "")),
-        str(record.get("command", "")),
-        str(record.get("result", "")),
-        str(record.get("message", "")),
-    )
-
-
-def append_history_record(record: dict, deduplicate: bool = False) -> bool:
+def append_history_record(record: dict) -> None:
     history = load_history()
-    signature = history_record_signature(record)
-
-    if deduplicate:
-        for existing in reversed(history):
-            if history_record_signature(existing) == signature:
-                return False
-
     history.append(record)
     save_history(history)
-    return True
-
-
-def archive_current_command_status() -> bool:
-    record = current_command_record()
-    if record is None:
-        return False
-
-    # Newer releases append every command-status event immediately. The boot
-    # rollover therefore only adds the old current status when it is not
-    # already present (for example after upgrading from an older release).
-    return append_history_record(record, deduplicate=True)
 
 
 def clear_current_command_status() -> None:
@@ -245,21 +153,8 @@ def clear_current_command_status() -> None:
 def is_new_machine_boot(current_boot_id: str) -> bool:
     if not current_boot_id:
         return False
-
     previous_boot_id = read_text_file(BOOT_ID_FILE, "")
-    if previous_boot_id:
-        return previous_boot_id != current_boot_id
-
-    record = current_command_record()
-    if record is None:
-        return False
-
-    last_updated_epoch = parse_timestamp(str(record.get("timestamp", "")))
-    boot_time_epoch = get_boot_time_epoch()
-    if last_updated_epoch is None or boot_time_epoch is None:
-        return False
-
-    return last_updated_epoch < boot_time_epoch
+    return bool(previous_boot_id and previous_boot_id != current_boot_id)
 
 
 def append_boot_history(current_boot_id: str) -> None:
@@ -276,7 +171,7 @@ def append_boot_history(current_boot_id: str) -> None:
         "severity": "info",
         "boot_id": current_boot_id,
         "boot_time": get_boot_time_iso(),
-    }, deduplicate=True)
+    })
 
 
 def initialize_boot_state() -> bool:
@@ -284,7 +179,6 @@ def initialize_boot_state() -> bool:
     new_boot = is_new_machine_boot(current_boot_id)
 
     if new_boot:
-        archive_current_command_status()
         clear_current_command_status()
         write_action("idle")
         append_boot_history(current_boot_id)
@@ -316,7 +210,7 @@ def publish_command_status() -> None:
     publish(TOPIC_LAST_UPDATED, read_text_file(LAST_UPDATED_FILE, ""), retain=True, qos=1)
 
 
-def on_connect(*args):
+def on_connect() -> None:
     publish(TOPIC_POWER, "online", retain=True, qos=1)
     publish(TOPIC_ACTION, read_action(), retain=True, qos=1)
     publish(TOPIC_INFO_HOSTNAME, HOSTNAME, retain=True, qos=1)
@@ -325,10 +219,6 @@ def on_connect(*args):
     publish(TOPIC_BOOT_TIME, get_boot_time_iso(), retain=True, qos=1)
     publish_command_status()
     publish_history()
-
-
-def on_disconnect(*args):
-    pass
 
 
 def uptime_loop():
@@ -366,20 +256,6 @@ def command_status_sync_loop():
         stop_event.wait(2)
 
 
-def build_client():
-    try:
-        return mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-    except AttributeError:
-        return mqtt.Client(
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-
-
 def main() -> int:
     global mqtt_client
 
@@ -399,19 +275,13 @@ def main() -> int:
     if not os.path.exists(LAST_UPDATED_FILE):
         write_text_file(LAST_UPDATED_FILE, datetime.now().isoformat(timespec="seconds"))
 
-    client = build_client()
-
-    if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASS)
-
-    client.will_set(TOPIC_POWER, payload="offline", qos=1, retain=True)
-
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
-
-    mqtt_client = client
-    client.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
-    client.loop_start()
+    mqtt_client = MqttClient(
+        CONFIG["mqtt"],
+        client_id=CLIENT_ID,
+        will={"topic": TOPIC_POWER, "payload": "offline", "qos": 1, "retain": True},
+        on_connect=on_connect,
+    )
+    mqtt_client.start(mode="thread")
 
     threading.Thread(target=uptime_loop, daemon=True).start()
     threading.Thread(target=action_sync_loop, daemon=True).start()
@@ -432,11 +302,7 @@ def main() -> int:
             time.sleep(0.4)
         except Exception:
             pass
-        try:
-            client.loop_stop()
-            client.disconnect()
-        except Exception:
-            pass
+        mqtt_client.stop()
 
     return 0
 

@@ -7,8 +7,11 @@
 #   1. vist som knap i Homelab Panel,
 #   2. accepteret som allow-listet panel-command,
 #   3. oprettet som Home Assistant MQTT Discovery button når HA er enabled.
-# Payload skal samtidig findes i homelab-control/config.json -> commands på den
+# Payload skal samtidig findes i homelab-control/configs/config.json -> commands på den
 # remote enhed. Arbitrære shell-kommandoer accepteres aldrig fra MQTT.
+# confirm er kun en browser-dialog; Home Assistant viser ikke denne dialog.
+# Brug $TITLE som standard i ikke-tomme confirm-tekster; panelet erstatter det med enhedens title.
+# Alle tilgængelige device/button-felter er forklaret i README.md.
 
 REMOTE_DEVICES = {
     "aoostar_wtr": {
@@ -22,7 +25,7 @@ REMOTE_DEVICES = {
             "label": "Tænd Aoostar WTR",
             "mac": "AA:BB:CC:DD:EE:FF",
             "ip": "10.0.0.53",
-            "confirm": "Er du sikker på at du vil tænde Aoostar WTR?",
+            "confirm": "Er du sikker på at du vil tænde '$TITLE'?",
             # Retry er valgfri. Når enabled=True fortsætter panelet indtil ping
             # svarer, max_attempts nås eller brugeren trykker Annuller WoL.
             "retry": {
@@ -56,10 +59,8 @@ REMOTE_DEVICES = {
         "mqtt_controls": {
             "title": "Aoostar WTR kontrol",
             "topic": "aoostar/control/power",
-            # True sender JSON med command+job_id. Homelab Control kan
-            # dermed rapportere resultater på præcis samme job i panelet.
-            # False/udeladt beholder legacy plain-text payloads.
-            "json_jobs": True,
+            # Panelet sender altid JSON med command+job_id+source, så
+            # Homelab Control kan rapportere resultat på det samme job.
             "buttons": [
                 {
                     "id": "shutdown_delay",
@@ -69,7 +70,7 @@ REMOTE_DEVICES = {
                     "confirmation": "shutdown",
                     "color": "warn",
                     "icon": "⚠️",
-                    "confirm": "Er du sikker på at du vil slukke Aoostar WTR om 1 minut?"
+                    "confirm": "Er du sikker på at du vil slukke '$TITLE' om 1 minut?"
                 },
                 {
                     "id": "shutdown_cancel",
@@ -89,7 +90,7 @@ REMOTE_DEVICES = {
                     "confirmation": "reboot",
                     "color": "warn",
                     "icon": "🔄",
-                    "confirm": "Er du sikker på at du vil genstarte Aoostar WTR om 1 minut?"
+                    "confirm": "Er du sikker på at du vil genstarte '$TITLE' om 1 minut?"
                 },
                 {
                     "id": "reboot_cancel",
@@ -102,7 +103,7 @@ REMOTE_DEVICES = {
                     "confirm": ""
                 },
                 # Eksempel på et generisk allow-listet job. Opret tilsvarende
-                # run_watchtower command i remote homelab-control/config.json.
+                # run_watchtower command i remote homelab-control/configs/config.json.
                 {
                     "id": "run_watchtower",
                     "label": "Kør Watchtower",
@@ -111,7 +112,7 @@ REMOTE_DEVICES = {
                     "confirmation": "none",
                     "color": "ok",
                     "icon": "🐳",
-                    "confirm": "Kør Watchtower på Aoostar WTR?"
+                    "confirm": "Kør Watchtower på '$TITLE'?"
                 },
             ],
         },
@@ -125,7 +126,7 @@ REMOTE_DEVICES = {
             "label": "Tænd NAS",
             "mac": "11:22:33:44:55:66",
             "ip": "10.0.0.20",
-            "confirm": "Er du sikker på at du vil tænde NAS?",
+            "confirm": "Er du sikker på at du vil tænde '$TITLE'?",
             "retry": {"enabled": False, "interval_seconds": 15, "max_attempts": 20, "wait_for_mqtt_seconds": 120}
         },
         "status": {
@@ -153,7 +154,7 @@ REMOTE_DEVICES = {
             "label": "Tænd Proxmox-node",
             "mac": "77:88:99:AA:BB:CC",
             "ip": "10.0.0.30",
-            "confirm": "Er du sikker på at du vil tænde Proxmox-node?",
+            "confirm": "Er du sikker på at du vil tænde '$TITLE'?",
             "retry": {"enabled": False, "interval_seconds": 15, "max_attempts": 20, "wait_for_mqtt_seconds": 120}
         },
         "status": {
@@ -194,7 +195,7 @@ LOCAL_SERVER = {
             "script": "shutdown_delay.sh",
             "color": "warn",
             "icon": "⚠️",
-            "confirm": "Er du sikker på at du vil slukke denne homelab-server om 1 minut?"
+            "confirm": "Er du sikker på at du vil slukke '$TITLE' om 1 minut?"
         },
         {
             "id": "shutdown_cancel",
@@ -210,7 +211,7 @@ LOCAL_SERVER = {
             "script": "reboot_delay.sh",
             "color": "warn",
             "icon": "🔄",
-            "confirm": "Er du sikker på at du vil genstarte denne homelab-server om 1 minut?"
+            "confirm": "Er du sikker på at du vil genstarte '$TITLE' om 1 minut?"
         },
         {
             "id": "reboot_cancel",

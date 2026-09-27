@@ -5,62 +5,43 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from datetime import datetime
 
-import paho.mqtt.client as mqtt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from shared_modules.mqtt import MqttClient
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")
 STATE_DIR = os.path.join(BASE_DIR, "state")
 JOBS_FILE = os.path.join(STATE_DIR, "jobs.json")
 
 
-def load_config() -> dict:
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+    CONFIG = json.load(f)
 
-
-CONFIG = load_config()
-
-MQTT_HOST = CONFIG["mqtt"]["host"]
-MQTT_PORT = CONFIG["mqtt"]["port"]
-MQTT_USER = CONFIG["mqtt"]["user"]
-MQTT_PASS = CONFIG["mqtt"]["pass"]
-MQTT_KEEPALIVE = CONFIG["mqtt"]["keepalive"]
 
 CLIENT_ID = CONFIG["client_ids"]["command_listener"]
 TOPIC_CONTROL = CONFIG["topics"]["control_power"]
-COMMAND_MAP = CONFIG.get("commands", {})
+COMMAND_MAP = CONFIG["commands"]
 SHARED_POWER_SCRIPTS = {
     "shutdown_delay.sh",
     "shutdown_cancel.sh",
     "reboot_delay.sh",
     "reboot_cancel.sh",
 }
-MAX_PARALLEL_JOBS = max(1, int(CONFIG.get("timing", {}).get("max_parallel_jobs", 4)))
-JOB_HISTORY_MAX_ENTRIES = max(1, int(CONFIG.get("timing", {}).get("job_history_max_entries", 100)))
+MAX_PARALLEL_JOBS = max(1, int(CONFIG["timing"]["max_parallel_jobs"]))
+JOB_HISTORY_MAX_ENTRIES = max(1, int(CONFIG["timing"]["job_history_max_entries"]))
 
 JOBS_LOCK = threading.Lock()
 JOB_SEMAPHORE = threading.Semaphore(MAX_PARALLEL_JOBS)
 MQTT_CLIENT = None
 
 
-def derive_jobs_topic() -> str:
-    explicit = str(CONFIG.get("topics", {}).get("status_jobs", "")).strip()
-    if explicit:
-        return explicit
-
-    last_message_topic = str(CONFIG.get("topics", {}).get("status_last_message", "")).strip()
-    suffix = "/last_message"
-    if last_message_topic.endswith(suffix):
-        return last_message_topic[:-len(suffix)] + "/jobs"
-    return ""
-
-
-TOPIC_JOBS = derive_jobs_topic()
+TOPIC_JOBS = CONFIG["topics"]["status_jobs"]
 
 
 def timestamp_now() -> str:
@@ -68,38 +49,26 @@ def timestamp_now() -> str:
 
 
 def normalize_command_spec(command: str, raw_spec) -> dict | None:
-    if isinstance(raw_spec, str):
-        script = raw_spec.strip()
-        spec = {
-            "script": script,
-            "label": command,
-            "category": "power" if command.startswith(("shutdown", "reboot")) else "command",
-            "timeout": 60,
-        }
-    elif isinstance(raw_spec, dict):
-        spec = dict(raw_spec)
-        script = str(spec.get("script", "")).strip()
-        spec["script"] = script
-        spec["label"] = str(spec.get("label") or command)
-        spec["category"] = str(spec.get("category") or "command").strip().lower()
-        try:
-            spec["timeout"] = max(1, int(spec.get("timeout", 60)))
-        except (TypeError, ValueError):
-            spec["timeout"] = 60
-    else:
+    if not isinstance(raw_spec, dict):
         return None
-
-    if not spec.get("script"):
+    spec = dict(raw_spec)
+    script = str(spec.get("script", "")).strip()
+    if not script:
         return None
+    spec["script"] = script
+    spec["label"] = str(spec.get("label") or command)
+    spec["category"] = str(spec.get("category") or "command").strip().lower()
+    try:
+        spec["timeout"] = max(1, int(spec.get("timeout", 60)))
+    except (TypeError, ValueError):
+        spec["timeout"] = 60
     return spec
 
 
 def resolve_script_path(script_name: str) -> str | None:
-    # The bundled shutdown/reboot helpers are shared Homelab Panel scripts and
-    # live under PROJECT_ROOT/scripts. Other configured job scripts are not
-    # moved by Homelab Panel; for backward compatibility a plain custom filename
-    # continues to resolve from PROJECT_ROOT as it did in 0.0.9. MQTT can only
-    # select a command ID from COMMAND_MAP, never supply a script path directly.
+    # Bundled shutdown/reboot helpers live under PROJECT_ROOT/scripts. Other
+    # configured job scripts resolve from PROJECT_ROOT. MQTT selects only an
+    # allow-listed command ID and never supplies a script path directly.
     if os.path.basename(script_name) != script_name or script_name in {".", ".."}:
         return None
 
@@ -157,11 +126,7 @@ def publish_jobs() -> None:
     if MQTT_CLIENT is None or not TOPIC_JOBS:
         return
     payload = json.dumps(get_jobs_snapshot(), ensure_ascii=False, separators=(",", ":"))
-    info = MQTT_CLIENT.publish(TOPIC_JOBS, payload=payload, qos=1, retain=True)
-    try:
-        info.wait_for_publish(timeout=5)
-    except Exception:
-        pass
+    MQTT_CLIENT.publish(TOPIC_JOBS, payload, qos=1, retain=True, wait_timeout=5)
 
 
 def recover_interrupted_jobs() -> None:
@@ -303,15 +268,17 @@ def run_job(job_id: str, command: str, spec: dict) -> None:
             print(f"Failed to execute {spec['script']}: {exc}", flush=True)
 
 
-def queue_command(command: str, requested_job_id: str = "", source: str = "MQTT direct") -> str | None:
+def queue_command(command: str, requested_job_id: str, source: str) -> str | None:
     raw_spec = COMMAND_MAP.get(command)
     spec = normalize_command_spec(command, raw_spec)
     if not spec:
         print(f"Unknown command: {command}", flush=True)
         return None
 
-    safe_requested = "".join(ch for ch in requested_job_id if ch.isalnum() or ch in "-_")[:64]
-    job_id = safe_requested or uuid.uuid4().hex[:12]
+    job_id = "".join(ch for ch in requested_job_id if ch.isalnum() or ch in "-_")[:64]
+    if not job_id:
+        print("Rejected command without a valid job_id", flush=True)
+        return None
     now = timestamp_now()
     update_job(
         job_id,
@@ -333,71 +300,51 @@ def queue_command(command: str, requested_job_id: str = "", source: str = "MQTT 
     return job_id
 
 
-def parse_control_payload(payload: str) -> tuple[str, str, str]:
+def parse_control_payload(payload: str) -> tuple[str, str, str] | None:
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
-        return payload.strip(), "", "MQTT direct"
-
+        return None
     if not isinstance(data, dict):
-        return "", "", "MQTT direct"
-    return (
-        str(data.get("command", "")).strip(),
-        str(data.get("job_id", "")).strip(),
-        str(data.get("source", "MQTT JSON")).strip() or "MQTT JSON",
-    )
+        return None
+    command = str(data.get("command", "")).strip()
+    job_id = str(data.get("job_id", "")).strip()
+    source = str(data.get("source", "")).strip()
+    if not command or not job_id or not source:
+        return None
+    return command, job_id, source
 
 
-def on_connect(*args):
-    client = args[0]
-    client.subscribe(TOPIC_CONTROL, qos=1)
+def on_connect() -> None:
     print(f"Subscribed to {TOPIC_CONTROL}", flush=True)
     publish_jobs()
 
 
-def on_message(client, userdata, msg):
-    payload = msg.payload.decode("utf-8", errors="replace").strip()
-    command, requested_job_id, source = parse_control_payload(payload)
-    print(f"Received command: {command}", flush=True)
-
-    if not command:
-        print("Rejected empty/invalid command payload", flush=True)
+def on_message(topic: str, payload: str, retain: bool, qos: int) -> None:
+    parsed = parse_control_payload(payload)
+    if parsed is None:
+        print("Rejected invalid command payload; expected JSON command/job_id/source", flush=True)
         return
+    command, requested_job_id, source = parsed
+    print(f"Received command: {command}", flush=True)
 
     job_id = queue_command(command, requested_job_id, source)
     if job_id:
         print(f"Queued command={command} job_id={job_id}", flush=True)
 
 
-def build_client():
-    try:
-        return mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-    except AttributeError:
-        return mqtt.Client(
-            client_id=CLIENT_ID,
-            protocol=mqtt.MQTTv311,
-        )
-
-
 def main() -> int:
     global MQTT_CLIENT
     os.makedirs(STATE_DIR, exist_ok=True)
     recover_interrupted_jobs()
-    client = build_client()
-    MQTT_CLIENT = client
-
-    if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASS)
-
-    client.on_connect = on_connect
-    client.on_message = on_message
-
-    client.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
-    client.loop_forever()
+    MQTT_CLIENT = MqttClient(
+        CONFIG["mqtt"],
+        client_id=CLIENT_ID,
+        subscriptions=[(TOPIC_CONTROL, 1)],
+        on_connect=on_connect,
+        on_message=on_message,
+    )
+    MQTT_CLIENT.start(mode="forever")
     return 0
 
 

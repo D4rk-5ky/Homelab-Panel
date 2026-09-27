@@ -1,10 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd -- "${MODULE_DIR}/.." && pwd)"
 STATE_DIR="${BASE_DIR}/state"
 LOG_DIR="${BASE_DIR}/logs"
-CONFIG_FILE="${BASE_DIR}/config.json"
+CONFIG_FILE="${BASE_DIR}/configs/config.json"
 
 ACTION_FILE="${STATE_DIR}/action"
 LAST_COMMAND_FILE="${STATE_DIR}/last_command"
@@ -29,49 +30,15 @@ print(data)
 PY
 }
 
-json_get_optional() {
-    local key="$1"
-    local default_value="${2:-}"
-    python3 - "$CONFIG_FILE" "$key" "$default_value" <<'PY'
-import json, sys
-config_path = sys.argv[1]
-key_path = sys.argv[2].split(".")
-default = sys.argv[3]
-with open(config_path, "r", encoding="utf-8") as f:
-    data = json.load(f)
-try:
-    for part in key_path:
-        data = data[part]
-except (KeyError, TypeError):
-    print(default)
-else:
-    print(data)
-PY
-}
-
-MQTT_HOST="$(json_get mqtt.host)"
-MQTT_PORT="$(json_get mqtt.port)"
-MQTT_USER="$(json_get mqtt.user)"
-MQTT_PASS="$(json_get mqtt.pass)"
-
 TOPIC_POWER="$(json_get topics.status_power)"
 TOPIC_ACTION="$(json_get topics.status_action)"
 TOPIC_LAST_COMMAND="$(json_get topics.status_last_command)"
 TOPIC_LAST_RESULT="$(json_get topics.status_last_result)"
 TOPIC_LAST_MESSAGE="$(json_get topics.status_last_message)"
 TOPIC_LAST_UPDATED="$(json_get topics.status_last_updated)"
-TOPIC_HISTORY="$(json_get_optional topics.status_history '')"
-HISTORY_MAX_ENTRIES="$(json_get_optional timing.history_max_entries '100')"
+TOPIC_HISTORY="$(json_get topics.status_history)"
+HISTORY_MAX_ENTRIES="$(json_get timing.history_max_entries)"
 
-# Compatibility with older active configs: derive aoostar/status/history from
-# aoostar/status/last_message when status_history has not yet been added.
-if [[ -z "${TOPIC_HISTORY}" && "${TOPIC_LAST_MESSAGE}" == */last_message ]]; then
-    TOPIC_HISTORY="${TOPIC_LAST_MESSAGE%/last_message}/history"
-fi
-
-if ! [[ "${HISTORY_MAX_ENTRIES}" =~ ^[0-9]+$ ]] || [[ "${HISTORY_MAX_ENTRIES}" -lt 1 ]]; then
-    HISTORY_MAX_ENTRIES=100
-fi
 
 ensure_dirs() {
     mkdir -p "${STATE_DIR}"
@@ -88,25 +55,10 @@ mqtt_pub() {
 
     [[ -n "${topic}" ]] || return 0
 
-    if [[ -n "${MQTT_USER}" ]]; then
-        mosquitto_pub \
-            -h "${MQTT_HOST}" \
-            -p "${MQTT_PORT}" \
-            -u "${MQTT_USER}" \
-            -P "${MQTT_PASS}" \
-            -t "${topic}" \
-            -m "${payload}" \
-            -r \
-            -q 1
-    else
-        mosquitto_pub \
-            -h "${MQTT_HOST}" \
-            -p "${MQTT_PORT}" \
-            -t "${topic}" \
-            -m "${payload}" \
-            -r \
-            -q 1
-    fi
+    # Keep payload bytes on stdin and credentials in the existing JSON config.
+    # The shared Python helper owns all MQTT transport and reports failure via rc.
+    printf '%s' "${payload}" | python3 "${BASE_DIR}/../shared_modules/mqtt.py" \
+        --config "${CONFIG_FILE}" --topic "${topic}" --qos 1 --retain > /dev/null
 }
 
 write_action() {
@@ -136,10 +88,7 @@ import os
 import sys
 
 history_file, lock_file, max_entries, command, result, message, timestamp = sys.argv[1:]
-try:
-    max_entries = max(1, int(max_entries))
-except ValueError:
-    max_entries = 100
+max_entries = max(1, int(max_entries))
 
 os.makedirs(os.path.dirname(history_file), exist_ok=True)
 with open(lock_file, "a+", encoding="utf-8") as lock:
