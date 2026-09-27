@@ -15,7 +15,7 @@
     .logout-button { border:0; border-radius:8px; padding:10px 14px; background:#374151; color:#f3f4f6; font-weight:bold; cursor:pointer; }
     .history-list { display:grid; gap:10px; }
     .history-item { background:#111827; border:1px solid #374151; border-radius:10px; padding:12px; word-break:break-word; }
-    .history-item.error { border-color:#ef4444; } .history-time { color:#9ca3af; font-size:13px; margin-bottom:6px; }
+    .history-item.error { border-color:#ef4444; } .history-item.warning { border-color:#8b5cf6; } .history-time { color:#9ca3af; font-size:13px; margin-bottom:6px; }
     .history-value { font-size:15px; margin:3px 0; } .tag { display:inline-block; background:#374151; border-radius:6px; padding:2px 7px; margin-right:5px; font-size:12px; }
   </style>
 </head>
@@ -39,7 +39,7 @@
     <h2>📚 Event timeline</h2>
     <div class="history-list">
       {% for entry in history %}
-        <div class="history-item {% if entry.severity=='error' %}error{% endif %}">
+        <div class="history-item {% if entry.severity=='error' %}error{% elif entry.severity=='warning' %}warning{% endif %}">
           <div class="history-time">{{ entry.timestamp }} · {{ entry.source }}</div>
           <div><span class="tag">{{ entry.category }}</span><span class="tag">{{ entry.event_type }}</span>{% if entry.job_id %}<span class="tag">job {{ entry.job_id }}</span>{% endif %}</div>
           {% if entry.command and entry.command!='Ingen' %}<div class="history-value"><b>Kommando:</b> {{ entry.command }}</div>{% endif %}

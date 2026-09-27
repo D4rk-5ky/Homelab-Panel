@@ -34,6 +34,7 @@
     .job { background:#111827; border:1px solid #374151; border-radius:9px; padding:10px; font-size:14px; min-width:0; overflow-wrap:anywhere; }
     .job.running,.job.queued,.job.waiting,.job.confirming { border-color:#f59e0b; }
     .job.success { border-color:#10b981; } .job.failure { border-color:#ef4444; }
+    .job.timed_out { border-color:#8b5cf6; }
     .job-title { font-weight:bold; } .job-meta { color:#9ca3af; margin-top:4px; }
     .small-button { width:auto; margin-top:8px; padding:8px 10px; }
     @media (max-width:700px) { .grid,.status-grid,.wol-grid { grid-template-columns:1fr; } }
@@ -97,6 +98,7 @@
   <div class="card">
     <h2>🧰 Jobstatus</h2>
     <p class="muted">Nyeste jobs vises først. Scroll i listen for at se ældre jobs.</p>
+    <p class="muted">Farver: grøn = succes, rød = fejl, gul/orange = aktiv eller venter, lilla = timed out. Et timed-out job tæller ikke længere som aktivt.</p>
     <p class="muted">Jobs kan køre parallelt på samme eller forskellige hosts. Remote success/failure kommer fra Homelab Control scriptets exit code; MQTT publish alene tæller kun som afsendt.</p>
     <div class="status-grid">
       {% for device_id, device in remote_devices.items() %}
@@ -106,9 +108,9 @@
           <ul class="job-list" tabindex="0" aria-label="Jobstatus for {{ device['title'] }}" data-device-id="{{ device_id }}">
             {% for job in st['jobs'] %}
               <li class="job {{ job.get('status','') }}">
-                <div class="job-title">{{ job.get('label') or job.get('command') or job.get('job_id') }} · {{ job.get('status','ukendt') }}</div>
+                <div class="job-title">{{ job.get('label') or job.get('command') or job.get('job_id') }} · {% if job.get('status') == 'timed_out' %}timed out{% else %}{{ job.get('status','ukendt') }}{% endif %}</div>
                 <div>{{ job.get('message','') }}</div>
-                <div class="job-meta">{{ job.get('updated_at') or job.get('queued_at','') }}{% if job.get('runtime_seconds') is not none %} · runtime {{ job.get('runtime_seconds') }}s{% endif %} · {{ job.get('job_id','') }}</div>
+                <div class="job-meta">{{ job.get('updated_at') or job.get('queued_at','') }}{% if job.get('runtime_seconds') is not none %} · runtime {{ job.get('runtime_seconds') }}s{% endif %}{% if job.get('timeout_remaining_seconds') is not none and job.get('status') != 'timed_out' %} · timeout om {{ job.get('timeout_remaining_seconds') }}s{% elif job.get('job_timeout_seconds') is not none %} · timeout {{ job.get('job_timeout_seconds') }}s{% endif %}{% if job.get('timed_out_at') %} · timed out {{ job.get('timed_out_at') }}{% endif %} · {{ job.get('job_id','') }}</div>
               </li>
             {% else %}
               <li class="muted">Ingen jobs endnu.</li>

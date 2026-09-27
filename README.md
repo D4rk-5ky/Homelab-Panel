@@ -78,7 +78,7 @@ sudo apt update
 sudo apt install python3 python3-flask python3-paho-mqtt wakeonlan iputils-ping
 ```
 
-`apt update` refreshes package metadata; `apt install` installs Python, Flask, the distribution Paho MQTT client, `wakeonlan`, and `ping`. The shared MQTT module uses Paho callback API v2, so the Python environment must provide **paho-mqtt 2.x or newer**. `sudo` runs the package commands with administrator privileges. A reachable MQTT broker is needed for MQTT control/status and Home Assistant discovery. All application publishing and subscriptions use `paho-mqtt`; Mosquitto command-line clients are not required. A Mosquitto broker can still serve as your MQTT server. Install Paho in the Python environment used by both the panel and the agent/action scripts.
+`apt update` refreshes package metadata; `apt install` installs Python, Flask, the distribution Paho MQTT client, `wakeonlan`, and `ping`. The shared MQTT transport supports both the **Paho MQTT 1.x callback API** and **Paho MQTT 2.x callback API v2**. It automatically omits the v2-only constructor argument when `CallbackAPIVersion` is unavailable and accepts both callback signature shapes. `sudo` runs the package commands with administrator privileges. A reachable MQTT broker is needed for MQTT control/status and Home Assistant discovery. All application publishing and subscriptions use `paho-mqtt`; Mosquitto command-line clients are not required. A Mosquitto broker can still serve as your MQTT server. Install Paho in the Python environment used by both the panel and the agent/action scripts.
 
 From the project root, create the active configs:
 
@@ -249,7 +249,7 @@ Python's `-c` runs the quoted expression; it prints 32 random bytes as hexadecim
 
 Each status topic is configured explicitly. An empty topic disables that specific subscription; the panel does not derive missing topic names from another topic.
 
-`confirmation.shutdown_timeout_seconds` defaults to `180`; `confirmation.reboot_timeout_seconds` defaults to `300`. Both have a minimum of 10 seconds.
+`confirmation.shutdown_timeout_seconds` defaults to `180`; `confirmation.reboot_timeout_seconds` defaults to `300`. Both have a minimum of 10 seconds and are fallback physical-state confirmation deadlines. The supplied example sets both to `60`. If the selected remote button defines `job_timeout_seconds`, that per-job lifecycle deadline takes precedence for shutdown/reboot confirmation.
 
 ### Remote buttons
 
@@ -264,6 +264,7 @@ Every button supports:
 | `payload` | Command ID allowed by the remote agent's `commands` map |
 | `category` | History/job category, such as `power`, `maintenance`, `backup`, or `command` |
 | `confirmation` | `shutdown`, `reboot`, or `none`; configure it explicitly for each button |
+| `job_timeout_seconds` | Optional positive integer. While the job is still `queued`, `running`, `waiting`, or `confirming`, the panel shows a countdown and changes it to `timed_out` when this many seconds have elapsed from `started_at` (or `queued_at` if it has not started). Omit it for no panel lifecycle timeout. This does **not** kill the remote script. |
 | `color` | Web button CSS class: `ok`, `warn`, `danger`, or `neutral` |
 | `icon` | Web label icon/emoji; not copied to HA's separate MDI-icon field |
 | `confirm` | Browser confirmation text; `$TITLE` is replaced with the owning device `title`; empty skips the browser prompt |
@@ -289,6 +290,7 @@ Example custom button:
     "payload": "run_watchtower",
     "category": "maintenance",
     "confirmation": "none",
+    "job_timeout_seconds": 3600,
     "color": "ok",
     "icon": "🐳",
     "confirm": "Kør Watchtower på '$TITLE'?",
@@ -338,7 +340,7 @@ Each command is an object:
 - `script`: required direct filename. The four bundled power filenames resolve under `scripts/`; other filenames resolve from the project root.
 - `label`: job display label, default command ID.
 - `category`: event category, default `command` when omitted.
-- `timeout`: maximum script duration in seconds, default `60`, minimum `1`.
+- `timeout`: maximum **remote script execution** duration in seconds, default `60`, minimum `1`. If this expires, Homelab Control stops waiting for the script and reports the job as `timed_out`. This is separate from the panel button's optional `job_timeout_seconds`, which only controls how long an unresolved active job is considered active by the panel.
 
 The panel and agent each maintain their own allow-list. MQTT text is never executed as shell code.
 
@@ -403,40 +405,65 @@ The agent's `topics.control_power` accepts only the current JSON job envelope:
 
 ### Command flag reference
 
-Use this command to inspect the publisher without publishing:
+The only project entry point with an argument parser is the one-shot publisher:
 
 ```bash
 python3 shared_modules/mqtt.py --help
 ```
 
-| Publisher flag | Value / default | Effect and example |
-|---|---|---|
-| `-h`, `--help` | No value | Print help and exit without reading payload/config or contacting a broker |
-| `--config PATH` | Required in normal CLI use | Read the JSON `mqtt` object; `--config homelab-control/configs/config.json`. Credentials remain in the file. |
-| `--topic TOPIC` | Required with `--config` | Publish to this topic; empty names and `+`/`#` wildcards are rejected. Payload is read verbatim from stdin. |
-| `--qos 0`, `1`, or `2` | Default `1` for CLI; panel uses `MQTT_CONFIG.qos` | MQTT delivery level: at most once, at least once, or exactly once at the protocol level |
-| `--retain` | Off by default | Retain telemetry at the broker. The shell status helper enables it; leave it off for commands. |
-| `--timeout SECONDS` | Default `20`; positive finite number | Total publication timeout, including process startup, DNS, connection, and MQTT send/acknowledgement; `--timeout 10` |
-| `--request-stdin` | Internal worker mode; mutually exclusive with `--config` | Used by the Python parent to pass a JSON request and receive a JSON result. The parent supplies the hard timeout. Use the normal config/topic interface for manual publishing. |
+`--help` is safe: argument parsing exits before the helper reads stdin/configuration or contacts a broker. Normal publishing mode reads the MQTT payload **verbatim from stdin**. The table below lists every supported flag, including the internal worker flag so the complete interface is documented.
 
-Normal helper exit codes: `0` for completed publication, `1` for config/input/publication failure, and `2` for invalid CLI arguments. The internal worker returns a JSON `[success, message]` pair; its process status reports whether the worker itself ran successfully.
+| Publisher flag | Value / required / default | What it does | Example / safety notes |
+|---|---|---|---|
+| `-h`, `--help` | No value; optional | Prints the complete CLI help and exits with status `0` | Safe inspection mode; no MQTT or payload work is started |
+| `--config PATH` | Path string; required for normal CLI mode; mutually exclusive with `--request-stdin` | Opens JSON at `PATH` and reads its required top-level `mqtt` object for host/port/credentials | `--config homelab-control/configs/config.json`; credentials stay in the file rather than argv |
+| `--request-stdin` | Boolean flag; **internal only**; mutually exclusive with `--config` | Reads one complete JSON worker request from stdin and prints JSON `[success, message]` | Used by `publish_message()` so a parent process can enforce a hard timeout. Do not use this as the normal manual interface. |
+| `--topic TOPIC` | String; required with `--config` | Selects one exact MQTT destination. Empty topics and `+` / `#` wildcard topics are rejected before connecting. | `--topic homelab-panel/control`; the message body itself still comes from stdin |
+| `--qos {0,1,2}` | Integer; optional; default `1` | Chooses MQTT delivery QoS: `0` at-most-once, `1` at-least-once, `2` exactly-once at the MQTT protocol level | Commands may use the QoS required by your setup; this does **not** prove a remote script succeeded |
+| `--retain` | Boolean flag; optional; default **off** | Sets the MQTT retained flag on the publication | Appropriate for status/telemetry when intended. **Never retain power/control commands**, because a broker could replay them to a reconnecting subscriber. |
+| `--timeout SECONDS` | Positive finite number; optional; default `20` seconds | Sets the total publication deadline, covering worker startup, DNS, connect, publish, and any required MQTT acknowledgement | Decimal values are accepted, e.g. `--timeout 2.5`; zero, negative, NaN, or infinity are rejected |
 
-The remaining flags belong to external tools. They are not arguments to `app.py`, the agent services, or the power scripts.
+Normal mode example, publishing retained telemetry:
+
+```bash
+printf '%s' 'online' \
+  | python3 shared_modules/mqtt.py \
+      --config homelab-control/configs/config.json \
+      --topic aoostar/status/power \
+      --qos 1 \
+      --retain \
+      --timeout 20
+```
+
+Command example — note that `--retain` is deliberately omitted:
+
+```bash
+printf '%s' '{"target":"local","command":"shutdown_cancel"}' \
+  | python3 shared_modules/mqtt.py \
+      --config homelab-control/configs/config.json \
+      --topic homelab-panel/control \
+      --qos 0 \
+      --timeout 20
+```
+
+Normal helper exit codes are `0` for a completed publication, `1` for config/input/publication failure, and `2` for invalid CLI syntax/arguments from `argparse`. In internal `--request-stdin` mode the helper reports publication success/failure in the JSON response; a syntactically valid worker invocation returns process status `0` after producing that response, and the parent interprets the boolean result.
+
+The remaining flags below belong to external tools. They are **not** arguments to `app.py`, either Homelab Control daemon, or the bundled power scripts.
 
 | Tool / flag | Value and effect | Example / source |
 |---|---|---|
-| `wakeonlan -i ADDRESS` | Destination broadcast address | `WOL_BROADCAST`, example `255.255.255.255`; target MAC follows as a positional argument |
-| `ping -c COUNT` | Number of echo requests | Fixed `1` |
-| `ping -W TIMEOUT` | Per-reply timeout; units depend on OS | Fixed `1` second on Linux, `1000` milliseconds on macOS |
-| `shutdown -h +1` | Schedule Linux shutdown/halt after one minute | `+1` is a positional time value, not a flag |
-| `shutdown -r +1` | Schedule Linux reboot after one minute | Fixed delay in the supplied reboot script |
-| `shutdown -c` | Cancel the scheduled Linux shutdown or reboot | Both cancel scripts use this operation |
-| `systemctl enable --now UNIT` | Enable the service at boot and start it immediately | Select only the units used on this host |
-| `journalctl -u UNIT -f` | `-u` selects a service; `-f` follows new log entries | `journalctl -u homelab-controll.service -f` |
-| `chmod +x FILE` | Add executable permission; `+x` is a symbolic mode, not an app flag | `chmod +x scripts/*.sh` |
-| `python3 -c CODE` | Execute the supplied Python code string | Session-key generation command above |
-| `python3 -B` | Disable import-time bytecode writes | Used for offline tests |
-| `python3 -m unittest discover -s tests -v` | `-m` runs a module, `-s` selects the test directory, `-v` prints individual test results | Run from the project root |
+| `wakeonlan -i ADDRESS` | `-i` selects the destination broadcast address | `WOL_BROADCAST`, example `255.255.255.255`; the target MAC is the following positional argument |
+| `ping -c COUNT` | `-c` sets the number of echo requests | Fixed to `1` by the panel |
+| `ping -W TIMEOUT` | `-W` sets the per-reply timeout; units depend on OS | Fixed to `1` second on Linux and `1000` milliseconds on macOS |
+| `shutdown -h +1` | `-h` requests Linux shutdown/halt; `+1` is the positional delay in minutes | Bundled delayed-shutdown script |
+| `shutdown -r +1` | `-r` requests Linux reboot; `+1` is the positional delay in minutes | Bundled delayed-reboot script |
+| `shutdown -c` | `-c` cancels a scheduled Linux shutdown or reboot | Both bundled cancel scripts use the same operation |
+| `systemctl enable --now UNIT` | `enable` configures start-at-boot; `--now` also starts immediately | Use only for the supplied units needed on that host |
+| `journalctl -u UNIT -f` | `-u` selects one systemd unit; `-f` follows new entries | `journalctl -u homelab-controll.service -f` |
+| `chmod +x FILE` | `+x` adds executable permission using symbolic mode syntax | `chmod +x scripts/*.sh` |
+| `python3 -c CODE` | `-c` executes the supplied Python code string | Used above to generate a Flask session key |
+| `python3 -B ...` | `-B` disables Python bytecode writes | Used by the offline test command so checks do not create `__pycache__` |
+| `python3 -m unittest ...` | `-m` runs a module; `discover` enables test discovery; `-s tests` selects the test directory; `-v` prints individual results | `python3 -B -m unittest discover -s tests -v` from the project root |
 
 ### Bundled power scripts and external flags
 
@@ -460,8 +487,9 @@ The dashboard lists each device’s newest jobs first. Each list shows approxima
 - Ping and MQTT are evaluated independently. Both online gives `Online`; one alone gives `Ikke fuldt online`; neither gives `Offline`.
 - MQTT online/offline confirmation needs a connected broker and a recent power status. Broker loss invalidates cached online status during evaluation.
 - WoL sends/retries until ping responds, then waits for MQTT online when configured. Without a power topic, WoL completion can use ping alone even though the dashboard's combined online state still requires MQTT.
-- Shutdown confirmation watches for ping offline plus MQTT offline. Reboot confirmation watches for that offline phase followed by ping and MQTT online. These watchers run after successful command dispatch.
-- MQTT publication success means `sent`, not successful script execution. Agent jobs report `queued → running → success/failure`, based on script exit status and timeout, with runtime and output. Current panel jobs can receive both agent results and physical-state confirmation updates.
+- Shutdown confirmation watches for ping offline plus MQTT offline. Reboot confirmation watches for that offline phase followed by ping and MQTT online. These watchers run after successful command dispatch. A button-level `job_timeout_seconds` overrides the fallback confirmation deadline for that job.
+- MQTT publication success means `sent`, not successful script execution. Agent jobs normally report `queued → running → success/failure`; a script execution deadline or an unresolved panel lifecycle deadline reports `timed_out` instead. A timed-out job is not counted as active. A later real remote success/failure can replace a display-time timeout when new job state arrives.
+- Job cards use green for `success`, red for `failure`, yellow/orange for active waiting/running states, and purple for `timed_out`. Active jobs with `job_timeout_seconds` show the remaining timeout seconds in the job metadata; after expiry the card explicitly states that the job is no longer considered active.
 - Remote listener startup marks interrupted active jobs as failures. Panel jobs and event history are persisted, but in-memory confirmation/WoL workers are not resumed across panel restarts.
 - Expected states include `unknown`, `starting`, `online`, `offline_pending`, `offline`, and `restarting`. They distinguish planned power actions from unexpected downtime.
 - History records commands, results/messages, jobs, WoL attempts, availability transitions/durations, boot events, and MQTT connection events. Category and error filters are available.
@@ -479,7 +507,7 @@ Review scripts before allowing them, protect MQTT with authentication/ACLs, and 
 
 ## Offline checks
 
-With Python 3.10+, Flask, and **paho-mqtt 2.x or newer** installed, from the project root:
+With Python 3.10+, Flask, and a supported **paho-mqtt 1.x or 2.x** installed, from the project root:
 
 ```bash
 python3 -B -m unittest discover -s tests -v

@@ -24,6 +24,38 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.24 — 2026-09-27
+
+### Optional job lifecycle timeout and Paho MQTT 1.x compatibility
+
+- Added the optional per-button `job_timeout_seconds` lifecycle setting. While a configured job remains `queued`, `running`, `waiting`, or `confirming`, the panel exposes the remaining seconds; after the deadline it is shown as the distinct terminal `timed_out` state and no longer counts as an active job. Omitting the setting leaves the panel lifecycle unlimited.
+- Set the supplied shutdown/reboot button examples to `job_timeout_seconds: 60`, as requested. Their fallback physical confirmation deadlines are also shown as 60 seconds in the example configuration. The lifecycle timeout does not kill a remote script; Homelab Control's existing command `timeout` remains the separate subprocess execution limit.
+- Added an explicit timeout note to expired job cards and a separate **purple** visual state. Current job colors are green=`success`, red=`failure`, yellow/orange=active/waiting, and purple=`timed_out`.
+- Kept display-time expiry non-destructive: `combined_device_jobs()` derives a timed-out view without rewriting stored remote state, so a later real success/failure report can still replace the display timeout.
+- Reused one `PanelActionManager.configured_job_timeout_seconds()` resolver for button configuration, dashboard evaluation, and power confirmation rather than duplicating timeout parsing.
+- Changed shutdown/reboot confirmation-deadline expiry from `failure` to `timed_out`/warning. A cancellation still stops its confirmation worker; if the original job is left unresolved, the configured lifecycle timeout ages it out of the active-job set.
+- Changed Homelab Control subprocess execution timeout reporting from `failure` to the same distinct `timed_out` state with an explicit non-active message. Other script errors/non-zero exits remain `failure`.
+- Reintegrated Paho MQTT 1.x support while retaining Paho 2.x callback API v2. Shared client construction requests `CallbackAPIVersion.VERSION2` only when that API exists; connect/disconnect callbacks accept and normalize both version families.
+- Reworked the optional long-running publish-completion wait to bounded `is_published()` polling, which is available across supported Paho 1.x/2.x versions and avoids a version-specific completion-call dependency. The one-shot publisher also accepts both four-argument Paho 1.x and five-argument Paho 2.x connect callbacks.
+- Extended regression coverage for optional/non-active lifecycle expiry, countdown behavior, confirmation timeout handling, dashboard timeout rendering, and simulated Paho 1.x constructor/callback behavior.
+- Updated README.md, `commented_code_map.md`, and the affected device configuration example for current behavior. Existing command allow-lists, retained-command safety, path guards, authentication, power-script semantics, and unrelated MQTT behavior remain unchanged.
+- Version advances exactly from 0.0.23 to 0.0.24.
+
+## 0.0.23 — 2026-09-27
+
+### Self-describing MQTT CLI and flag documentation audit
+
+- Kept application/runtime behavior unchanged. This release does not alter MQTT transport semantics, command envelopes, allow-lists, Home Assistant discovery, web routes, power actions, status evaluation, or persistence behavior.
+- Audited every project-owned command-line entry point. `shared_modules/mqtt.py` remains the only argument-parsed application interface; `app.py`, both Homelab Control daemons, and the bundled power scripts intentionally have no CLI flag parser.
+- Expanded `shared_modules/mqtt.py --help` so every supported flag is self-describing: `--config PATH`, internal `--request-stdin`, `--topic TOPIC`, `--qos {0,1,2}`, `--retain`, and `--timeout SECONDS`. Help now states normal stdin behavior, defaults/constraints, the end-to-end timeout scope, retained-command safety, and includes a normal retained-telemetry example.
+- Kept the existing parser behavior and safety model intact: normal mode still requires `--config` plus `--topic`; payload stays on stdin; credentials stay in the JSON config; publication topics still reject empty names and MQTT wildcards in `_publish_once()`; commands remain non-retained by policy; the internal worker remains mutually exclusive with normal config mode.
+- Strengthened `test_cli_help_and_config_errors()` so the regression suite checks that safe help exposes every flag plus the stdin and retained-command safety guidance before verifying missing-config failure.
+- Reworked README.md's current-use command reference to describe every project-owned flag with value type, required/default state, purpose, safety implications, examples, timeout units, and exit-code behavior. External command flags (`wakeonlan`, `ping`, `shutdown`, `systemctl`, `journalctl`, `chmod`, and Python test/helper flags) are separately identified so they are not mistaken for application flags.
+- Updated `commented_code_map.md` with the complete CLI flag contract, why each flag exists, and the expanded `cli_main()` / test responsibilities while preserving coverage of all current Python/shell functions and commands.
+- Audited all three tracked configuration examples against current code. No configuration key or available option changed in this release, so the examples intentionally remain byte-identical to 0.0.22 rather than receiving cosmetic churn.
+- Preserved the existing README disclaimer text unchanged because no replacement disclaimer body was included with this request.
+- Version advances exactly from 0.0.22 to 0.0.23.
+
 ## 0.0.22 — 2026-09-26
 
 ### Remove test-only API surface and redundant test scaffolding

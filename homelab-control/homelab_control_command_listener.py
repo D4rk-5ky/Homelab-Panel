@@ -246,10 +246,13 @@ def run_job(job_id: str, command: str, spec: dict) -> None:
             finished_at = timestamp_now()
             update_job(
                 job_id,
-                status="failure",
+                status="timed_out",
                 finished_at=finished_at,
                 updated_at=finished_at,
-                message=f"Command timed out after {int(spec.get('timeout', 60))} seconds",
+                message=(
+                    f"Command timed out after {int(spec.get('timeout', 60))} seconds; "
+                    "job is no longer considered active"
+                ),
                 runtime_seconds=round(time.time() - started_at_epoch, 3),
             )
             publish_jobs()
