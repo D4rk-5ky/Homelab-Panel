@@ -60,6 +60,17 @@ class PanelActionManager:
         cmd = ["wakeonlan", "-i", self._wol_broadcast(), mac]
         return self._run_command(cmd)
 
+    def configured_job_timeout_seconds(self, device: dict, command: str) -> int | None:
+        """Return a positive optional panel job-lifecycle timeout for one button."""
+        button = self._get_device_button(device, command)
+        if not button or button.get("job_timeout_seconds") in (None, ""):
+            return None
+        try:
+            timeout = int(button.get("job_timeout_seconds"))
+        except (TypeError, ValueError):
+            return None
+        return timeout if timeout > 0 else None
+
     def run_local_script(self, script_name: str) -> tuple[bool, str]:
         """Run one configured project script after strict path/executable checks."""
         if os.path.basename(script_name) != script_name or script_name in {".", ".."}:
@@ -248,11 +259,21 @@ class PanelActionManager:
             if event:
                 event.set()
 
-    def power_confirmation_worker(self, device_id: str, command: str, job_id: str, confirmation: str) -> None:
-        """Confirm shutdown/reboot using both ping and MQTT state transitions."""
+    def power_confirmation_worker(
+        self, device_id: str, command: str, job_id: str, confirmation: str, job_timeout_seconds: int | None
+    ) -> None:
+        """Confirm shutdown/reboot while respecting the optional job lifecycle timeout."""
         device = self._remote_devices()[device_id]
         confirm_cfg = device.get("confirmation", {}) or {}
-        timeout = max(10, int(confirm_cfg.get("shutdown_timeout_seconds", 180) if confirmation == "shutdown" else confirm_cfg.get("reboot_timeout_seconds", 300)))
+        confirmation_timeout = max(
+            10,
+            int(
+                confirm_cfg.get("shutdown_timeout_seconds", 180)
+                if confirmation == "shutdown"
+                else confirm_cfg.get("reboot_timeout_seconds", 300)
+            ),
+        )
+        timeout = job_timeout_seconds if job_timeout_seconds is not None else confirmation_timeout
 
         cancel_event = threading.Event()
         with self._power_confirm_lock:
@@ -301,14 +322,21 @@ class PanelActionManager:
         if cancel_event.is_set():
             return
         finished = datetime.now().isoformat(timespec="seconds")
-        self._update_panel_job(device_id, job_id, status="failure", finished_at=finished, updated_at=finished, message=f"Timed out waiting to confirm {confirmation}")
+        message = (
+            f"Timed out after {timeout} seconds waiting to confirm {confirmation}; "
+            "job is no longer considered active"
+        )
+        self._update_panel_job(
+            device_id, job_id, status="timed_out", finished_at=finished, updated_at=finished,
+            message=message, job_timeout_seconds=job_timeout_seconds,
+        )
         self._record_device_event(
             device_id, category="power", event_type=f"{confirmation}_confirmation_timeout", command=command,
-            result="failure", message=f"Timed out waiting for {confirmation} confirmation", severity="error",
-            job_id=job_id, job_status="failure",
+            result="timed_out", message=message, severity="warning",
+            job_id=job_id, job_status="timed_out",
         )
 
-    def execute_remote_action(self, device_id: str, command: str, job_id: str = "", source: str = "Homelab Panel") -> tuple[bool, str]:
+    def execute_remote_action(self, device_id: str, command: str, job_id: str = "", *, source: str) -> tuple[bool, str]:
         """Resolve one configured remote action and publish only its allow-listed payload."""
         device = self._remote_devices().get(device_id)
         if not device:

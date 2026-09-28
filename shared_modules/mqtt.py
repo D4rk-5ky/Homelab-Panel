@@ -25,36 +25,18 @@ class MqttClient:
         self.reconnect_min, self.reconnect_max = reconnect_min, reconnect_max
         self.client = None
         self.connected = False
-        self.connection_reason = ""
         self.loop_mode = ""
 
-    @staticmethod
-    def _reason_value(reason) -> int | None:
-        try:
-            return int(reason)
-        except (TypeError, ValueError):
-            try:
-                return int(getattr(reason, "value", None))
-            except (TypeError, ValueError):
-                return None
-
-    @staticmethod
-    def _reason_text(reason) -> str:
-        value = MqttClient._reason_value(reason)
-        if value is None:
-            return str(reason or "")
-        try:
-            return mqtt.error_string(value)
-        except Exception:
-            return str(value)
-
     def _build_client(self):
-        client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=self.client_id,
-            clean_session=True,
-            protocol=mqtt.MQTTv311,
-        )
+        client_kwargs = {
+            "client_id": self.client_id,
+            "clean_session": True,
+            "protocol": mqtt.MQTTv311,
+        }
+        callback_api = getattr(mqtt, "CallbackAPIVersion", None)
+        if callback_api is not None:
+            client_kwargs["callback_api_version"] = callback_api.VERSION2
+        client = mqtt.Client(**client_kwargs)
         if self.reconnect_min is not None or self.reconnect_max is not None:
             client.reconnect_delay_set(min_delay=1 if self.reconnect_min is None else int(self.reconnect_min),
                                        max_delay=30 if self.reconnect_max is None else int(self.reconnect_max))
@@ -78,30 +60,37 @@ class MqttClient:
                 topics[topic] = int(qos)
         return sorted(topics.items())
 
-    def _handle_connect(self, client, userdata, flags, reason_code, properties):
+    def _handle_connect(self, client, userdata, flags, reason_code, properties=None):
         self.client = client
-        self.connected = self._reason_value(reason_code) in (None, 0)
-        self.connection_reason = "" if self.connected else self._reason_text(reason_code)
+        self.connected = reason_code == 0
         if not self.connected:
             if self.on_disconnect:
-                self.on_disconnect(self.connection_reason)
+                self.on_disconnect(str(reason_code))
             return
         for topic, qos in self._subscription_items():
             client.subscribe(topic, qos=qos)
         if self.on_connect:
             self.on_connect()
 
-    def _handle_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
-        self.connected, self.connection_reason = False, self._reason_text(reason_code)
+    def _handle_disconnect(self, client, userdata, *callback_args):
+        # Paho 1.x callback API: (client, userdata, rc)
+        # Paho 2.x VERSION2 API: (client, userdata, disconnect_flags, reason_code, properties)
+        if len(callback_args) == 1:
+            reason_code = callback_args[0]
+        elif len(callback_args) >= 3:
+            reason_code = callback_args[-2]
+        else:
+            reason_code = callback_args[-1] if callback_args else 0
+        self.connected = False
         if self.on_disconnect:
-            self.on_disconnect(self.connection_reason)
+            self.on_disconnect(str(reason_code))
 
     def _handle_message(self, client, userdata, message):
         if self.on_message:
             self.on_message(str(message.topic), message.payload.decode("utf-8", errors="replace").strip(),
                             bool(getattr(message, "retain", False)), int(getattr(message, "qos", 0)))
 
-    def start(self, *, mode: str = "forever"):
+    def start(self, *, mode: str):
         if self.client is None:
             self.client = self._build_client()
         self.loop_mode = mode
@@ -120,7 +109,7 @@ class MqttClient:
                 raise ValueError(f"Unsupported MQTT connection mode: {mode}")
         return self
 
-    def publish(self, topic: str, payload: str, *, qos: int = 0, retain: bool = False,
+    def publish(self, topic: str, payload: str, *, qos: int, retain: bool,
                 wait_timeout: float | None = None) -> bool:
         if self.client is None or not self.connected or not topic:
             return False
@@ -129,7 +118,11 @@ class MqttClient:
             return False
         if wait_timeout is not None:
             try:
-                info.wait_for_publish(timeout=wait_timeout)
+                deadline = time.monotonic() + float(wait_timeout)
+                while not info.is_published() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if not info.is_published():
+                    return False
             except Exception:
                 return False
         return True
@@ -148,14 +141,14 @@ class MqttClient:
             pass
 
 
-def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
-                  retain: bool = False, timeout: float = 20) -> tuple[bool, str]:
+def _publish_once(settings: dict, topic: str, payload: str, *, qos: int,
+                  retain: bool, timeout: float) -> tuple[bool, str]:
     """Publish once with no reconnect/retry; close hard on uncertain failure."""
     client = None
     published = publish_started = False
     connection_result = None
 
-    def on_connect(client, userdata, flags, reason_code, properties):
+    def on_connect(client, userdata, flags, reason_code, properties=None):
         nonlocal connection_result
         connection_result = reason_code
 
@@ -185,7 +178,7 @@ def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
 
         while connection_result is None:
             network_step()
-        if MqttClient._reason_value(connection_result) not in (None, 0):
+        if connection_result != 0:
             raise RuntimeError(f"MQTT broker rejected connection: {connection_result}")
         if time.monotonic() >= deadline:
             raise TimeoutError("MQTT operation timed out before publication")
@@ -216,8 +209,8 @@ def _publish_once(settings: dict, topic: str, payload: str, *, qos: int = 0,
                 pass
 
 
-def publish_message(settings: dict, topic: str, payload: str, *, qos: int = 0,
-                    retain: bool = False, timeout: float = 20) -> tuple[bool, str]:
+def publish_message(settings: dict, topic: str, payload: str, *, qos: int,
+                    retain: bool, timeout: float = 20) -> tuple[bool, str]:
     """Run the disposable publisher worker under a hard parent-process timeout."""
     try:
         timeout = float(timeout)
@@ -241,19 +234,70 @@ def publish_message(settings: dict, topic: str, payload: str, *, qos: int = 0,
         return False, f"MQTT publication failed: {exc}"
 
 
-def cli_main(argv=None) -> int:
+def cli_main() -> int:
     """Run the standalone one-shot MQTT CLI used by shell/service callers."""
-    parser = argparse.ArgumentParser(description="One-shot MQTT publisher")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Publish exactly one MQTT message using broker settings from a "
+            "Homelab Control-style JSON config."
+        ),
+        epilog=(
+            "Normal mode reads the MQTT payload verbatim from stdin.\n"
+            "Example:\n"
+            "  printf '%s' 'online' | python3 shared_modules/mqtt.py "
+            "--config homelab-control/configs/config.json "
+            "--topic host/status/power --qos 1 --retain\n\n"
+            "Safety: omit --retain for command/control messages. "
+            "--request-stdin is reserved for the internal bounded worker."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--config", help="Path to agent JSON config; reads its mqtt section")
+    source.add_argument(
+        "--config",
+        metavar="PATH",
+        help=(
+            "JSON config path for normal CLI use; reads the required top-level "
+            "mqtt object (mutually exclusive with --request-stdin)"
+        ),
+    )
     source.add_argument("--request-stdin", action="store_true",
-                        help="Internal worker mode: read a JSON request from stdin and return JSON")
-    parser.add_argument("--topic", help="Destination topic (required with --config); payload is read verbatim from stdin")
-    parser.add_argument("--qos", type=int, choices=(0, 1, 2), default=1, help="MQTT delivery QoS (default: 1)")
-    parser.add_argument("--retain", action="store_true", help="Retain telemetry at the broker; never use for commands")
-    parser.add_argument("--timeout", type=float, default=20,
-                        help="Total publication timeout in seconds (default: 20; must be positive)")
-    args = parser.parse_args(argv)
+                        help=(
+                            "INTERNAL ONLY: read the complete worker request as JSON from "
+                            "stdin and print a JSON [success, message] response"
+                        ))
+    parser.add_argument(
+        "--topic",
+        metavar="TOPIC",
+        help=(
+            "exact destination topic, required with --config; '+' and '#' "
+            "wildcards are rejected; payload is read verbatim from stdin"
+        ),
+    )
+    parser.add_argument(
+        "--qos",
+        type=int,
+        choices=(0, 1, 2),
+        default=1,
+        metavar="{0,1,2}",
+        help="MQTT delivery QoS for normal CLI mode (default: 1)",
+    )
+    parser.add_argument(
+        "--retain",
+        action="store_true",
+        help="retain telemetry at the broker (default: off); never use for commands",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=20,
+        metavar="SECONDS",
+        help=(
+            "positive finite total timeout for process startup, DNS, connect, "
+            "publish and required acknowledgement (default: 20 seconds)"
+        ),
+    )
+    args = parser.parse_args()
     if args.request_stdin:
         try:
             response = _publish_once(**json.load(sys.stdin))

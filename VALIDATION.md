@@ -1,169 +1,173 @@
-# Homelab Panel 0.0.21 — validation
+# Homelab Panel 0.0.24 — validation
 
 ## Result and scope
 
-Created **0.0.21** from the packaged **0.0.20** baseline after a function-by-function and current-path audit of the panel, Homelab Control agents, shared MQTT implementation, shell helpers, templates, examples, and tests.
+Created **0.0.24** from the uploaded **0.0.23** package.
 
-The goal was to remove code that exists only for older layouts/protocols/callers and to remove dead delegation/duplicate paths without removing current functionality. Component independence remains a hard boundary:
+The complete baseline project was inspected before the requested behavior was changed. The source tree contains **34 relative project paths** covering the panel app/modules/templates, Homelab Control daemons/helper, shared MQTT transport, power-action scripts, service units, configuration examples, tests, and release documentation.
 
-- `homelab-panel` may use its own modules plus root `shared_modules.mqtt`;
-- `homelab-control` may use its own files/modules plus root `shared_modules.mqtt`;
-- neither component imports the other component;
-- `shared_modules/mqtt.py` remains the only shared Python implementation between them.
+This release implements two requested changes only:
 
-No project path was added or removed in 0.0.21. The release keeps the same **34 tracked source files** as 0.0.20.
+1. optional lifecycle expiry for unresolved jobs, including 60-second shutdown/reboot examples and a distinct `timed_out` state; and
+2. support for the older Paho MQTT 1.x callback API alongside current Paho 2.x callback API v2.
 
-## Function/caller audit
-
-The final source contains:
-
-- **152 production Python functions/methods**;
-- **13 production shell functions**;
-- **165 production functions total**;
-- **203 Python/shell functions including tests**.
-
-Every remaining production function was checked against direct callers, callback registration, thread targets, Flask decorators, or executable entry-point use.
-
-Only five production Python names occur only at their definition site:
-
-- `require_web_login()` — Flask `@app.before_request` hook;
-- `device_history()` — Flask route;
-- `wol_cancel()` — Flask route;
-- `mqtt_button()` — Flask route;
-- `local_button()` — Flask route.
-
-These are framework-registered entry points, not dead code. Every shell function has a current call site. `commented_code_map.md` contains every one of the **203** Python/shell function names present in the final release.
-
-A normalized AST comparison found **zero exact duplicate production Python function bodies** after cleanup. A separate AST name-use pass found **zero unused top-level imports or simple top-level aliases/assignments** in executable production modules.
-
-## Removed legacy/dead paths
-
-The audit removed code that is not part of the current project behavior:
-
-- app-level mirror/delegate functions around `PanelActionManager`, `PanelMqttRuntime`, and `HomeAssistantIntegration`;
-- app-level duplicate MQTT cache/connectivity aliases;
-- the old query-string `PANEL_TOKEN` web-access path;
-- derived/sibling MQTT status-topic compatibility helpers;
-- delayed-command `shutdown`/`reboot` aliases and implicit old power-category inference;
-- implicit/default remote panel-control targeting;
-- `json_jobs` and plain-text Homelab Control command handling;
-- old string-valued command allow-list entries;
-- generation of missing remote `job_id`/`source` fields;
-- pre-current boot-history migration/archive helpers;
-- duplicate Python `load_config()` wrappers;
-- unused status-indicator log-directory ownership;
-- shell `json_get_optional()` and invalid-history-limit fallback;
-- Paho callback API v1 constructor support and public callback aliases;
-- flexible string subscription formats;
-- the unused shared MQTT `connect`-only lifecycle mode;
-- no-op command aliases and other variables/helpers whose only purpose was compatibility with earlier internal layouts.
-
-Searches of current source/docs/tests confirm that removed knobs/surfaces such as `PANEL_TOKEN`, `json_jobs`, `derive_related_topic`, `homelab_mqtt.py`, old MQTT callback compatibility names, and the connect-only mode are no longer referenced outside historical `VERSIONING.md` entries.
-
-## Current behavior made explicit
-
-0.0.21 supports only the current project formats:
-
-- web access is either open when `WEB_AUTH_CONFIG.enabled` is false or uses the configured Flask session login;
-- panel-control MQTT envelopes require explicit `target="remote"` or `target="local"`;
-- direct remote-agent commands require JSON with non-empty `command`, `job_id`, and `source`;
-- Homelab Control command allow-list entries are objects, not legacy strings;
-- device status topics are explicit config fields rather than derived sibling-topic fallbacks;
-- `LOCAL_SERVER["name"]` is required for the local Home Assistant device name;
-- `shared_modules/mqtt.py` requires Paho callback API v2 / `paho-mqtt` 2.x+;
-- the shared long-running MQTT client supports only current production modes: `forever`, `thread`, and `async_thread`.
-
-Current robustness that is still useful—malformed runtime-state handling, allow-list validation, path containment, process timeouts, atomic writes, MQTT timeout/no-retry behavior, and safe display defaults—was retained. Those are current safety/recovery behaviors rather than historical compatibility.
-
-## Codebase reduction
-
-Production Python/shell source was counted with the same method on both releases, excluding tests:
-
-- 0.0.20: **4,018 lines** across 18 production Python/shell files;
-- 0.0.21: **3,523 lines** across the same 18 files;
-- net reduction: **495 lines**.
-
-The project therefore became smaller without creating additional modules or cross-component imports.
-
-## Component boundary checks
+## Versioning
 
 Passed:
 
-- no Python import from `homelab-panel` into `homelab-control`;
-- no Python import from `homelab-control` into `homelab-panel`;
-- only `shared_modules/mqtt.py` imports `paho.mqtt.client` or constructs `mqtt.Client` in production code;
-- panel-specific MQTT cache/routing/HA behavior stays in `homelab-panel/modules/panel_mqtt.py`;
-- control-specific job execution/status behavior stays in `homelab-control`;
-- no additional root shared implementation module was created.
+- baseline `VERSION`: `0.0.23`;
+- final `VERSION`: `0.0.24`;
+- increment is exactly `0.0.1`;
+- rollover policy remains `0.0.99 -> 0.1.0`, not `0.0.100`.
 
-An independent smoke check from `/tmp` loaded the two Homelab Control Python entry points and panel module code using temporary current-format configs/stubs, verified current JSON command requirements, current object command specs, shared power-script resolution, and panel/control independence. Temporary active config files were removed after the check.
+## Job lifecycle timeout
 
-## Static and structure checks
+The new button option is:
 
-Passed on the final source tree:
+```python
+"job_timeout_seconds": 60,
+```
 
-- all **14 Python files** compile in memory with bytecode writing disabled;
-- all **6 shell files** pass `bash -n`;
-- all **3 embedded Python heredocs** compile;
-- all **4 Jinja templates** parse;
-- `homelab-control/configs/config.example.json` parses as JSON;
-- all **3 systemd unit examples** contain `[Unit]`, `[Service]`, `[Install]`, and `ExecStart=`;
-- the shared MQTT CLI imports under an isolated current-Paho stub and `--help` exposes `--config`, `--topic`, `--qos`, `--retain`, `--timeout`, and `--request-stdin`;
-- no current executable production module has an unused top-level import/simple alias reported by the AST audit;
-- no exact normalized duplicate production Python function body remains;
-- no `__pycache__`, `.pyc`, or `.pyo` remains after validation cleanup.
+Behavior verified from the implementation and isolated logic tests:
 
-## Focused shared-MQTT regression tests
+- the setting is optional and must resolve to a positive integer;
+- omitting it leaves the panel lifecycle without this expiry;
+- only `queued`, `running`, `waiting`, and `confirming` are active lifecycle states;
+- configured active jobs expose `timeout_remaining_seconds`;
+- when the deadline expires, the derived job state is `timed_out`;
+- `timed_out` is not treated as active;
+- the generated job message explicitly says the job timed out and is no longer considered active;
+- the timeout view is non-mutating, so a later real remote `success` or `failure` can replace a display-time timeout;
+- already-terminal jobs such as `success` are not rewritten by lifecycle expiry;
+- shutdown/reboot example buttons use 60 seconds as requested;
+- shutdown/reboot physical-confirmation fallback values in the tracked device example are also 60 seconds;
+- a button-level `job_timeout_seconds` is reused by the shutdown/reboot confirmation worker rather than parsed separately;
+- confirmation deadline expiry records `timed_out` with warning severity rather than `failure`;
+- cancelling the shutdown/reboot confirmation worker still stops that worker; if the original job remains unresolved, its configured lifecycle deadline makes the displayed/HA job non-active after expiry.
 
-The offline current-Paho compatibility fixture is test-only and is not included in the release.
+`job_timeout_seconds` is deliberately separate from Homelab Control's command `timeout`: the panel lifecycle timeout does **not** kill the remote script. The command-listener `timeout` is still the subprocess execution limit.
 
-The focused MQTT publisher/client/CLI/shell regression set passed **12/12** after the cleanup. It covers:
+An isolated `PanelActionManager` confirmation test exercised a one-second deadline with no confirmation signal and verified the final persisted callback state was `timed_out`, warning severity, and contained the explicit non-active timeout note.
 
-- configured auth/port/payload/QoS/retain handling;
-- unauthenticated default publication;
-- refused connections and publish/connect failures;
-- hard timeout close/disconnect behavior with no automatic command retry;
-- invalid input rejection before network creation;
-- current Paho callback API v2 client construction;
-- shared long-running `MqttClient` authentication/LWT/subscriptions/normalized message callbacks/publish/disconnect behavior;
-- bounded parent-worker handling with credentials kept off argv;
-- CLI config/stdin handling and CLI errors/help;
-- the real shell bridge calling the shared MQTT module.
+An isolated Homelab Control listener timeout test forced `subprocess.TimeoutExpired` and verified the resulting job record became `timed_out` with the message `Command timed out after ... seconds; job is no longer considered active`.
 
-Result:
+## Timeout UI/status presentation
+
+The dashboard/template implementation now uses:
+
+- green for `success`;
+- red for `failure`;
+- yellow/orange for active/waiting work;
+- purple for `timed_out`.
+
+The Jobs section includes a legend explaining those meanings. Configured active jobs show the remaining timeout seconds. Timed-out jobs show the configured timeout, timeout timestamp when available, and the explicit timeout message.
+
+Warning history entries use the same purple border so confirmation/subprocess timeout events are visibly distinct from red failures. `result_to_danish()` maps `timed_out` to `Timeout` for history/current-result display.
+
+All four Jinja templates parse successfully. The new Flask rendering regression is present in `tests/test_home_assistant.py`, but the real Flask-based suite could not be executed in this sandbox because its dependencies are unavailable; see the limitation section below.
+
+## Paho MQTT 1.x + 2.x compatibility
+
+`shared_modules/mqtt.py` now uses one version-adaptive transport path:
+
+- when `mqtt.CallbackAPIVersion` exists, client construction requests `VERSION2` explicitly;
+- when it is absent, the Paho-2-only `callback_api_version` constructor keyword is omitted, allowing Paho 1.x construction;
+- long-running connect handling accepts the Paho 1.x four-argument and Paho 2.x VERSION2 five-argument callback shapes;
+- disconnect handling normalizes Paho 1.x `(rc)` and Paho 2.x `(disconnect_flags, reason_code, properties)` callback tails;
+- the one-shot publisher's connect callback also accepts both version families;
+- optional publish completion waiting uses bounded `is_published()` polling, avoiding dependence on a version-specific completion-call signature.
+
+Five focused MQTT regression tests passed under an import-only Paho stub, including explicit simulated-Paho-1 coverage:
 
 ```text
-Ran 12 tests in 30.793s
+test_shared_long_running_client_api ... ok
+test_paho_v1_constructor_and_callback_shapes_are_supported ... ok
+test_paho_v1_one_shot_connect_callback_is_supported ... ok
+test_settings_payload_qos_and_retention_are_preserved ... ok
+test_invalid_inputs_fail_before_connecting ... ok
+
+Ran 5 tests in 0.002s
 OK
 ```
 
-## Full test-suite limitation
+The MQTT CLI `--help` also executes under the stub and still exposes the complete current flag contract: `--config PATH`, internal `--request-stdin`, `--topic TOPIC`, `--qos {0,1,2}`, `--retain`, and `--timeout SECONDS`, including the retained-command safety warning.
 
-The normal command was attempted on the final source without stubs:
+## Full-suite limitation
+
+The normal release test command was attempted:
 
 ```bash
 python3 -B -m unittest discover -s tests -v
 ```
 
-It cannot run in this sandbox because the real `paho-mqtt` package is not installed. Both test modules stop during import with `ModuleNotFoundError: No module named 'paho'`. Flask is also absent, so the real Flask-based panel tests cannot be rerun here.
+The sandbox does not contain the real `paho-mqtt` package, so collection stops with `ModuleNotFoundError: No module named 'paho'` before the Flask-dependent suite can run. Flask is also not available in this execution environment.
 
-The focused offline results above are therefore reported separately and are **not** represented as a full real-dependency suite pass.
+A temporary non-project `pip --target` dependency installation was attempted without changing the project or system Python. Package retrieval failed because the execution environment could not resolve the package index hostname. The temporary test dependency/stub directories are outside the project and are not included in the release.
+
+Consequently, this release was **not** exercised against an installed real Paho 1.x package, an installed real Paho 2.x package, or a real Flask test client in this sandbox. The version compatibility is covered by simulated callback/constructor tests and static inspection, but should still be exercised on the target hosts after deployment.
+
+## Static and structure checks
+
+Passed on the final source tree before packaging:
+
+- all **14 Python files** compile in memory without writing bytecode;
+- all **6 shell files** pass `bash -n`;
+- all **3 embedded Python heredocs** in the shell helper compile;
+- all **4 Jinja templates** parse;
+- `homelab-control/configs/config.example.json` parses as JSON;
+- all **3 systemd unit examples** contain `[Unit]`, `[Service]`, `[Install]`, and `ExecStart=`;
+- repository-wide argparse search still finds only `shared_modules/mqtt.py`;
+- `commented_code_map.md` contains every current Python/shell function name: **152 production Python functions/methods + 13 production shell functions + 42 test functions = 207 total**;
+- no source/config/template/service path was added or removed;
+- no `__pycache__`, `.pyc`, or `.pyo` exists in the release tree.
+
+Production Python/shell source is **3,651 lines**. Test source is **716 lines**.
+
+## Configuration and documentation audit
+
+The three tracked configuration examples were checked:
+
+- `homelab-panel/configs/config.example.py` — no new global panel option was required;
+- `homelab-panel/configs/devices.example.py` — documents the new optional per-button `job_timeout_seconds` and uses 60 seconds for shutdown/reboot plus their fallback confirmation values;
+- `homelab-control/configs/config.example.json` — its existing per-command `timeout` remains the remote subprocess limit and requires no new key.
+
+README.md documents the distinction between panel lifecycle timeout and agent execution timeout, all current status colors, countdown/timeout behavior, and Paho 1.x/2.x support. The existing CLI flag documentation remains complete.
+
+The existing README disclaimer body was preserved. The request referred to a disclaimer "as written below", but no replacement disclaimer text was supplied in the request, so no disclaimer wording was invented.
+
+## Files changed from 0.0.23
+
+The intended release changes are limited to:
+
+- `README.md`;
+- `VALIDATION.md`;
+- `VERSION`;
+- `VERSIONING.md`;
+- `commented_code_map.md`;
+- `homelab-control/homelab_control_command_listener.py`;
+- `homelab-panel/app.py`;
+- `homelab-panel/configs/devices.example.py`;
+- `homelab-panel/modules/panel_actions.py`;
+- `homelab-panel/templates/history.html`;
+- `homelab-panel/templates/index.html`;
+- `shared_modules/mqtt.py`;
+- `tests/test_home_assistant.py`;
+- `tests/test_mqtt_publish.py`.
+
+No project path is intended to be added or removed. All other baseline files must remain byte-identical.
 
 ## Not exercised against live infrastructure
 
-No production MQTT broker, Home Assistant instance, remote Homelab Control host, Wake-on-LAN target, shutdown/reboot action, or live systemd service was contacted or changed during validation.
+No production MQTT broker, Home Assistant instance, remote Homelab Control host, Wake-on-LAN target, real shutdown/reboot action, or live systemd service was contacted or changed.
 
-## Packaging checks
+## Packaging requirements
 
-Passed on the final release archive:
+The final ZIP is verified after creation for:
 
-- the **34-path** source manifest is identical to 0.0.20: no project path was added or removed;
-- only intended source/docs/tests files differ from the baseline;
-- no active private configs (`homelab-panel/configs/config.py`, `homelab-panel/configs/devices.py`, `homelab-control/configs/config.json`);
-- no `__pycache__`, `.pyc`, `.pyo`, runtime state/logs, build cache, or temporary files;
-- no duplicate ZIP member names;
-- ZIP integrity passes;
-- extracted-file SHA-256 values equal the release tree;
-- extracted Unix permissions equal the release tree.
-
-The final archive SHA-256 is recorded in the release response after packaging.
+- the same **34 relative project paths** as 0.0.23;
+- no unexpected changed/added/removed file;
+- no duplicate or traversal-unsafe ZIP member;
+- archive integrity;
+- byte-for-byte equality between archive members and the final release tree;
+- preserved Unix permission bits;
+- no active private config, runtime state/log, test stub, dependency download, cache, bytecode, build output, or temporary file.

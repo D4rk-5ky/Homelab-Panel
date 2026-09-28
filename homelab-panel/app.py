@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import subprocess
 import sys
@@ -350,6 +351,48 @@ def active_job_status(status: str) -> bool:
     return status in {"queued", "running", "waiting", "confirming"}
 
 
+def apply_job_timeout(device: dict, job: dict) -> dict:
+    """Return one display/state view with expired active jobs marked timed_out."""
+    result = dict(job)
+    status = str(result.get("status", "")).strip().lower()
+    if not active_job_status(status):
+        return result
+
+    raw_timeout = result.get("job_timeout_seconds")
+    if raw_timeout in (None, ""):
+        raw_timeout = ACTION_MANAGER.configured_job_timeout_seconds(device, str(result.get("command", "")))
+    try:
+        timeout = int(raw_timeout)
+    except (TypeError, ValueError):
+        return result
+    if timeout <= 0:
+        return result
+
+    anchor = str(result.get("started_at") or result.get("queued_at") or "").strip()
+    if not anchor:
+        return result
+    try:
+        started_epoch = datetime.fromisoformat(anchor).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return result
+
+    elapsed = max(0.0, time.time() - started_epoch)
+    result["job_timeout_seconds"] = timeout
+    result["timeout_remaining_seconds"] = max(0, int(math.ceil(timeout - elapsed)))
+    if elapsed < timeout:
+        return result
+
+    timed_out_at = datetime.fromtimestamp(started_epoch + timeout).isoformat(timespec="seconds")
+    result["status"] = "timed_out"
+    result["timed_out_at"] = timed_out_at
+    result["finished_at"] = result.get("finished_at") or timed_out_at
+    result["message"] = (
+        f"Timed out after {timeout} seconds; job is no longer considered active "
+        f"(last state: {status})"
+    )
+    return result
+
+
 def combined_device_jobs(device_id: str, device: dict) -> list[dict]:
     jobs = get_panel_jobs(device_id)
     jobs_topic = str(device.get("status", {}).get("jobs_topic", "")).strip()
@@ -367,6 +410,7 @@ def combined_device_jobs(device_id: str, device: dict) -> list[dict]:
                 key = (str(job.get("job_id")), str(job.get("updated_at")))
                 if key not in known:
                     jobs.append({**job, "origin": "Homelab Control"})
+    jobs = [apply_job_timeout(device, job) for job in jobs]
     jobs.sort(key=lambda j: str(j.get("updated_at") or j.get("queued_at") or ""), reverse=True)
     return jobs[:PANEL_JOB_MAX_ENTRIES]
 
@@ -404,6 +448,7 @@ def result_to_danish(payload: str | None) -> str:
         "running": "Kører",
         "waiting": "Venter",
         "confirming": "Bekræfter",
+        "timed_out": "Timeout",
         "cancelled": "Annulleret",
         "sent": "Afsendt",
         "success": "Succes",
@@ -808,20 +853,22 @@ def execute_and_record_remote_action(
     category = get_device_category(device, command)
     job_id = f"panel-{uuid.uuid4().hex[:10]}"
     now = datetime.now().isoformat(timespec="seconds")
-    update_panel_job(
-        device_id,
-        job_id,
-        command=command,
-        label=str((button or {}).get("label") or command),
-        category=category,
-        source=source,
-        status="queued",
-        queued_at=now,
-        started_at="",
-        finished_at="",
-        updated_at=now,
-        message="Queued for MQTT dispatch",
-    )
+    job_timeout_seconds = ACTION_MANAGER.configured_job_timeout_seconds(device, command)
+    job_fields = {
+        "command": command,
+        "label": str((button or {}).get("label") or command),
+        "category": category,
+        "source": source,
+        "status": "queued",
+        "queued_at": now,
+        "started_at": "",
+        "finished_at": "",
+        "updated_at": now,
+        "message": "Queued for MQTT dispatch",
+    }
+    if job_timeout_seconds is not None:
+        job_fields["job_timeout_seconds"] = job_timeout_seconds
+    update_panel_job(device_id, job_id, **job_fields)
 
     ok, message = ACTION_MANAGER.execute_remote_action(device_id, command, job_id=job_id, source=source)
     event_epoch = time.time()
@@ -863,14 +910,14 @@ def execute_and_record_remote_action(
         set_expected_state(device_id, "offline_pending", "Shutdown requested")
         threading.Thread(
             target=ACTION_MANAGER.power_confirmation_worker,
-            args=(device_id, command, job_id, "shutdown"),
+            args=(device_id, command, job_id, "shutdown", job_timeout_seconds),
             daemon=True,
         ).start()
     elif confirmation == "reboot":
         set_expected_state(device_id, "restarting", "Reboot requested")
         threading.Thread(
             target=ACTION_MANAGER.power_confirmation_worker,
-            args=(device_id, command, job_id, "reboot"),
+            args=(device_id, command, job_id, "reboot", job_timeout_seconds),
             daemon=True,
         ).start()
 
@@ -960,7 +1007,7 @@ def process_remote_jobs_message(topic: str, payload: str) -> None:
         command = str(job.get("command", ""))
         category = str(job.get("category") or get_device_category(device, command) or "command").lower()
         message = str(job.get("message") or status)
-        severity = "error" if status == "failure" else "info"
+        severity = "error" if status == "failure" else "warning" if status == "timed_out" else "info"
         runtime = job.get("runtime_seconds")
         record_device_event(
             device_id,

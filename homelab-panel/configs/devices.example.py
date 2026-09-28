@@ -52,8 +52,10 @@ REMOTE_DEVICES = {
         },
 
         "confirmation": {
-            "shutdown_timeout_seconds": 180,
-            "reboot_timeout_seconds": 300
+            # Fallback physical-confirmation deadlines when a button does not
+            # define job_timeout_seconds.
+            "shutdown_timeout_seconds": 60,
+            "reboot_timeout_seconds": 60
         },
 
         "mqtt_controls": {
@@ -68,6 +70,9 @@ REMOTE_DEVICES = {
                     "payload": "shutdown_delay",
                     "category": "power",
                     "confirmation": "shutdown",
+                    # Optional panel lifecycle deadline. When this expires while
+                    # the job is still active it becomes timed_out (not failure).
+                    "job_timeout_seconds": 60,
                     "color": "warn",
                     "icon": "⚠️",
                     "confirm": "Er du sikker på at du vil slukke '$TITLE' om 1 minut?"
@@ -88,6 +93,7 @@ REMOTE_DEVICES = {
                     "payload": "reboot_delay",
                     "category": "power",
                     "confirmation": "reboot",
+                    "job_timeout_seconds": 60,
                     "color": "warn",
                     "icon": "🔄",
                     "confirm": "Er du sikker på at du vil genstarte '$TITLE' om 1 minut?"

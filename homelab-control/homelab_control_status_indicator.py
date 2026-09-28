@@ -59,7 +59,7 @@ def ensure_dirs() -> None:
     os.makedirs(STATE_DIR, exist_ok=True)
 
 
-def read_text_file(path: str, default: str = "") -> str:
+def read_text_file(path: str, default: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as f:
             value = f.read().strip()
@@ -189,7 +189,7 @@ def initialize_boot_state() -> bool:
     return new_boot
 
 
-def publish(topic: str, payload: str, retain: bool = True, qos: int = 1) -> None:
+def publish(topic: str, payload: str, retain: bool, qos: int) -> None:
     global mqtt_client
     if mqtt_client is None or not topic:
         return

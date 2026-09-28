@@ -36,7 +36,7 @@ class PanelMqttRuntime:
         self.connection_info = {"connected_at": "", "disconnected_at": "", "disconnect_reason": ""}
         self.connected, self.transport = False, None
 
-    def set_state(self, topic: str, payload: str, retain: bool = False, qos: int = 0) -> str | None:
+    def set_state(self, topic: str, payload: str, retain: bool, qos: int) -> str | None:
         with self.state_lock:
             previous = self.state.get(topic)
             self.state[topic] = {"payload": payload, "timestamp": time.time(),
@@ -63,7 +63,7 @@ class PanelMqttRuntime:
         state = self.get_state(topic)
         return (None, None) if not state else (str(state["payload"]).strip(), int(time.time() - float(state["timestamp"])))
 
-    def publish_direct(self, topic: str, payload: str, qos: int = 1, retain: bool = True) -> bool:
+    def publish_direct(self, topic: str, payload: str, qos: int, retain: bool) -> bool:
         if self.transport is None or not self.connected:
             return False
         try:

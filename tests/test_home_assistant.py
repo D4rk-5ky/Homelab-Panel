@@ -211,6 +211,77 @@ class HomeAssistantTests(unittest.TestCase):
         self.assertNotIn("$TITLE", html)
         self.assertIn("O\\u0027Brien Node", html)
 
+
+    def test_job_lifecycle_timeout_is_optional_distinct_and_non_active(self):
+        device = self.panel.REMOTE_DEVICES["aoostar_wtr"]
+        self.assertEqual(self.panel.ACTION_MANAGER.configured_job_timeout_seconds(device, "shutdown_delay"), 60)
+        self.assertEqual(self.panel.ACTION_MANAGER.configured_job_timeout_seconds(device, "reboot_delay"), 60)
+        self.assertIsNone(self.panel.ACTION_MANAGER.configured_job_timeout_seconds(device, "run_watchtower"))
+
+        started = "2026-09-27T12:00:00"
+        started_epoch = self.panel.datetime.fromisoformat(started).timestamp()
+        job = {
+            "job_id": "timeout-test",
+            "command": "reboot_delay",
+            "status": "confirming",
+            "queued_at": started,
+            "started_at": started,
+            "updated_at": started,
+            "message": "Waiting to confirm reboot",
+            "job_timeout_seconds": 60,
+        }
+        with patch.object(self.panel.time, "time", return_value=started_epoch + 30):
+            waiting = self.panel.apply_job_timeout(device, job)
+        self.assertEqual(waiting["status"], "confirming")
+        self.assertEqual(waiting["timeout_remaining_seconds"], 30)
+        self.assertTrue(self.panel.active_job_status(waiting["status"]))
+
+        with patch.object(self.panel.time, "time", return_value=started_epoch + 61):
+            expired = self.panel.apply_job_timeout(device, job)
+        self.assertEqual(expired["status"], "timed_out")
+        self.assertEqual(expired["timeout_remaining_seconds"], 0)
+        self.assertFalse(self.panel.active_job_status(expired["status"]))
+        self.assertIn("no longer considered active", expired["message"])
+        self.assertEqual(job["status"], "confirming")  # display evaluation must not mutate persisted input
+
+        no_timeout = {**job, "command": "run_watchtower"}
+        no_timeout.pop("job_timeout_seconds")
+        with patch.object(self.panel.time, "time", return_value=started_epoch + 3600):
+            self.assertEqual(self.panel.apply_job_timeout(device, no_timeout)["status"], "confirming")
+
+        finished = {**job, "status": "success"}
+        with patch.object(self.panel.time, "time", return_value=started_epoch + 3600):
+            self.assertEqual(self.panel.apply_job_timeout(device, finished)["status"], "success")
+
+    def test_combined_jobs_and_power_confirmation_use_timed_out_state(self):
+        device = self.panel.REMOTE_DEVICES["aoostar_wtr"]
+        started = "2026-09-27T12:00:00"
+        started_epoch = self.panel.datetime.fromisoformat(started).timestamp()
+        self.panel.update_panel_job(
+            "aoostar_wtr", "panel-timeout", command="reboot_delay", label="Genstart om 1 minut",
+            status="confirming", queued_at=started, started_at=started, updated_at=started,
+            job_timeout_seconds=60, message="Waiting to confirm reboot",
+        )
+        with patch.object(self.panel.time, "time", return_value=started_epoch + 61):
+            jobs = self.panel.combined_device_jobs("aoostar_wtr", device)
+        self.assertEqual(jobs[0]["status"], "timed_out")
+        self.assertFalse(self.panel.active_job_status(jobs[0]["status"]))
+        with patch.object(self.panel, "ping_host", return_value=False), \
+             patch.object(self.panel.time, "time", return_value=started_epoch + 61):
+            html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="job timed_out"', html)
+        self.assertIn("lilla = timed out", html)
+        self.assertIn("job is no longer considered active", html)
+
+        action_module = sys.modules[self.panel.ACTION_MANAGER.__class__.__module__]
+        with patch.object(action_module.time, "time", side_effect=[0, 2]):
+            self.panel.ACTION_MANAGER.power_confirmation_worker(
+                "aoostar_wtr", "reboot_delay", "worker-timeout", "reboot", 1
+            )
+        worker_job = next(job for job in self.panel.get_panel_jobs("aoostar_wtr") if job["job_id"] == "worker-timeout")
+        self.assertEqual(worker_job["status"], "timed_out")
+        self.assertIn("no longer considered active", worker_job["message"])
+
     def test_webpages_render(self):
         with patch.object(self.panel, "ping_host", return_value=False):
             for url in ("/", "/history/aoostar_wtr", "/mqtt-diagnostics"):

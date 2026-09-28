@@ -29,15 +29,13 @@ class PublisherTests(unittest.TestCase):
         """Create a client whose first loop delivers a controlled CONNACK."""
         client = Mock()
         client.connect.return_value = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
-        client.loop.side_effect = lambda **kwargs: self.connect_callback(client, reason)
+        def connect_once(**kwargs):
+            client.on_connect(client, None, {}, reason, None)
+            return shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+        client.loop.side_effect = connect_once
         client.publish.return_value.rc = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
         client.publish.return_value.is_published.return_value = acknowledged
         return client
-
-    def connect_callback(self, client, reason):
-        """Deliver the callback without contacting a real broker."""
-        client.on_connect(client, None, {}, reason, None)
-        return shared_mqtt.mqtt.MQTT_ERR_SUCCESS
 
     def test_settings_payload_qos_and_retention_are_preserved(self):
         """Each publish uses configured auth/port and exact payload."""
@@ -47,7 +45,7 @@ class PublisherTests(unittest.TestCase):
                 with patch.object(shared_mqtt.mqtt, 'Client', return_value=client):
                     ok, _ = publisher._publish_once(
                         {'host': 'broker', 'port': 1884, 'user': 'alice', 'pass': 'secret'},
-                        'device/state', 'æ\n "value" ', qos=qos, retain=True)
+                        'device/state', 'æ\n "value" ', qos=qos, retain=True, timeout=20)
                 self.assertTrue(ok)
                 client.username_pw_set.assert_called_once_with('alice', 'secret')
                 client.connect.assert_called_once_with('broker', 1884, keepalive=60)
@@ -57,11 +55,11 @@ class PublisherTests(unittest.TestCase):
                 client.loop_start.assert_not_called()
                 client.socket.assert_not_called()
 
-    def test_default_command_is_nonretained_and_unauthenticated(self):
-        """Empty credentials remain optional; default command retention is off."""
+    def test_unauthenticated_publish_uses_explicit_nonretained_command_settings(self):
+        """Empty credentials remain optional while callers supply command QoS/retention explicitly."""
         client = self.client()
         with patch.object(shared_mqtt.mqtt, 'Client', return_value=client):
-            self.assertTrue(publisher._publish_once({'host': 'broker'}, 'command', 'wake')[0])
+            self.assertTrue(publisher._publish_once({'host': 'broker'}, 'command', 'wake', qos=0, retain=False, timeout=20)[0])
         client.username_pw_set.assert_not_called()
         client.publish.assert_called_once_with('command', payload='wake', qos=0, retain=False)
         client.connect.assert_called_once_with('broker', 1883, keepalive=60)
@@ -70,7 +68,7 @@ class PublisherTests(unittest.TestCase):
         """A broker rejecting login cannot be reported as a successful send."""
         client = self.client(reason=5)
         with patch.object(shared_mqtt.mqtt, 'Client', return_value=client):
-            ok, message = publisher._publish_once({'host': 'broker'}, 'command', 'wake')
+            ok, message = publisher._publish_once({'host': 'broker'}, 'command', 'wake', qos=0, retain=False, timeout=20)
         self.assertFalse(ok)
         self.assertIn('rejected', message)
         client.publish.assert_not_called()
@@ -86,7 +84,7 @@ class PublisherTests(unittest.TestCase):
                 else:
                     client.publish.return_value.rc = shared_mqtt.mqtt.MQTT_ERR_NO_CONN
                 with patch.object(shared_mqtt.mqtt, 'Client', return_value=client):
-                    self.assertFalse(publisher._publish_once({'host': 'broker'}, 'command', 'wake')[0])
+                    self.assertFalse(publisher._publish_once({'host': 'broker'}, 'command', 'wake', qos=0, retain=False, timeout=20)[0])
                 client.disconnect.assert_called_once()
                 client.reconnect.assert_not_called()
 
@@ -98,7 +96,7 @@ class PublisherTests(unittest.TestCase):
         client.socket.return_value.close.side_effect = lambda: events.append('close')
         client.disconnect.side_effect = lambda: events.append('disconnect')
         with patch.object(shared_mqtt.mqtt, 'Client', return_value=client), patch.object(shared_mqtt.time, 'monotonic', side_effect=[0, 0, 0, 2]):
-            ok, message = publisher._publish_once({'host': 'broker'}, 'command', 'wake', qos=1, timeout=1)
+            ok, message = publisher._publish_once({'host': 'broker'}, 'command', 'wake', qos=1, retain=False, timeout=1)
         self.assertFalse(ok)
         self.assertIn('delivery may be unknown', message)
         self.assertEqual(events, ['shutdown', 'close', 'disconnect'])
@@ -110,19 +108,10 @@ class PublisherTests(unittest.TestCase):
         cases = [('', {}), ('a/+', {}), ('a/#', {}), ('valid', {'qos': 3}),
                  ('valid', {'timeout': 0}), ('valid', {'timeout': float('nan')})]
         with patch.object(shared_mqtt.mqtt, 'Client') as build:
-            for topic, options in cases:
+            for topic, overrides in cases:
+                options = {'qos': 0, 'retain': False, 'timeout': 20, **overrides}
                 self.assertFalse(publisher._publish_once({'host': 'broker'}, topic, 'data', **options)[0])
             build.assert_not_called()
-
-    def test_client_construction_uses_current_paho_callback_api(self):
-        """Current clients require Paho callback API v2 and MQTT 3.1.1."""
-        with patch.object(shared_mqtt.mqtt, 'Client') as client:
-            client.return_value.connect.return_value = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
-            shared_mqtt.MqttClient({'host': 'broker'}).start(mode='thread')
-            self.assertTrue(client.call_args.kwargs['clean_session'])
-            self.assertEqual(client.call_args.kwargs['callback_api_version'], shared_mqtt.mqtt.CallbackAPIVersion.VERSION2)
-            self.assertEqual(client.call_args.kwargs['protocol'], shared_mqtt.mqtt.MQTTv311)
-            client.return_value.loop_start.assert_called_once()
 
     def test_shared_long_running_client_api(self):
         """Both components can use one shared lifecycle/subscription/message/publish API."""
@@ -130,7 +119,7 @@ class PublisherTests(unittest.TestCase):
         client.connect.return_value = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
         client.publish.return_value.rc = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
         events = []
-        with patch.object(shared_mqtt.mqtt, 'Client', return_value=client):
+        with patch.object(shared_mqtt.mqtt, 'Client', return_value=client) as build:
             transport = shared_mqtt.MqttClient(
                 {'host': 'broker', 'port': 1884, 'keepalive': 45, 'user': 'alice', 'pass': 'secret'},
                 client_id='shared-test',
@@ -140,6 +129,12 @@ class PublisherTests(unittest.TestCase):
                 on_disconnect=lambda reason: events.append(('disconnect', reason)),
                 on_message=lambda topic, payload, retain, qos: events.append(('message', topic, payload, retain, qos)),
             ).start(mode='thread')
+        self.assertTrue(build.call_args.kwargs['clean_session'])
+        if getattr(shared_mqtt.mqtt, 'CallbackAPIVersion', None) is not None:
+            self.assertEqual(build.call_args.kwargs['callback_api_version'], shared_mqtt.mqtt.CallbackAPIVersion.VERSION2)
+        else:
+            self.assertNotIn('callback_api_version', build.call_args.kwargs)
+        self.assertEqual(build.call_args.kwargs['protocol'], shared_mqtt.mqtt.MQTTv311)
         client.connect.assert_called_once_with('broker', 1884, keepalive=45)
         client.username_pw_set.assert_called_once_with('alice', 'secret')
         client.will_set.assert_called_once_with('status', payload='offline', qos=1, retain=True)
@@ -154,11 +149,54 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(events[0], ('connect',))
         self.assertEqual(events[-1][0], 'disconnect')
 
+    def test_paho_v1_constructor_and_callback_shapes_are_supported(self):
+        """Paho 1.x lacks CallbackAPIVersion and uses shorter callback signatures."""
+        client = Mock()
+        client.publish.return_value.rc = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+        events = []
+        with patch.object(shared_mqtt.mqtt, 'CallbackAPIVersion', None, create=True), \
+             patch.object(shared_mqtt.mqtt, 'Client', return_value=client) as build:
+            transport = shared_mqtt.MqttClient(
+                {'host': 'broker'},
+                subscriptions=[('legacy/topic', 1)],
+                on_connect=lambda: events.append(('connect',)),
+                on_disconnect=lambda reason: events.append(('disconnect', reason)),
+            )
+            built = transport._build_client()
+        self.assertIs(built, client)
+        self.assertNotIn('callback_api_version', build.call_args.kwargs)
+        client.on_connect(client, None, {}, 0)
+        self.assertTrue(transport.connected)
+        client.subscribe.assert_called_once_with('legacy/topic', qos=1)
+        client.on_disconnect(client, None, 7)
+        self.assertFalse(transport.connected)
+        self.assertEqual(events, [('connect',), ('disconnect', '7')])
+
+    def test_paho_v1_one_shot_connect_callback_is_supported(self):
+        """The disposable publisher also accepts Paho 1.x's four-argument connect callback."""
+        client = Mock()
+        client.connect.return_value = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+        client.publish.return_value.rc = shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+        client.publish.return_value.is_published.return_value = True
+
+        def connect_once(**kwargs):
+            client.on_connect(client, None, {}, 0)
+            return shared_mqtt.mqtt.MQTT_ERR_SUCCESS
+
+        client.loop.side_effect = connect_once
+        with patch.object(shared_mqtt.mqtt, 'CallbackAPIVersion', None, create=True), \
+             patch.object(shared_mqtt.mqtt, 'Client', return_value=client) as build:
+            ok, message = publisher._publish_once(
+                {'host': 'broker'}, 'legacy/topic', 'payload', qos=0, retain=False, timeout=20
+            )
+        self.assertTrue(ok, message)
+        self.assertNotIn('callback_api_version', build.call_args.kwargs)
+
     def test_parent_bounds_worker_and_keeps_credentials_off_argv(self):
         """The Paho child receives private input and retains the hard time limit."""
         result = Mock(returncode=0, stdout='[true, "published"]')
         with patch.object(shared_mqtt.subprocess, 'run', return_value=result) as run:
-            self.assertEqual(publisher.publish_message({'host': 'broker', 'pass': 'secret'}, 'topic', 'payload'), (True, 'published'))
+            self.assertEqual(publisher.publish_message({'host': 'broker', 'pass': 'secret'}, 'topic', 'payload', qos=0, retain=False), (True, 'published'))
         args, options = run.call_args
         self.assertEqual(args[0][0], sys.executable)
         self.assertNotIn('secret', ' '.join(args[0]))
@@ -166,7 +204,7 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(options['timeout'], 20)
         self.assertEqual(args[0][-1], '--request-stdin')
         with patch.object(shared_mqtt.subprocess, 'run', side_effect=subprocess.TimeoutExpired('publisher', 20)):
-            ok, message = publisher.publish_message({'host': 'broker'}, 'topic', 'payload')
+            ok, message = publisher.publish_message({'host': 'broker'}, 'topic', 'payload', qos=0, retain=False)
         self.assertFalse(ok)
         self.assertIn('timed out', message)
 
@@ -194,20 +232,31 @@ class PublisherTests(unittest.TestCase):
             config = Path(directory) / 'config.json'
             settings = {'host': 'broker', 'user': 'alice', 'pass': 'secret'}
             config.write_text(json.dumps({'mqtt': settings}))
-            with patch.object(shared_mqtt, 'publish_message', return_value=(True, 'sent')) as publish, patch.object(sys, 'stdin', io.StringIO('æ\n trailing ')), contextlib.redirect_stdout(io.StringIO()):
-                rc = publisher.cli_main(['--config', str(config), '--topic', 'state', '--qos', '2', '--retain', '--timeout', '3'])
+            argv = ['mqtt.py', '--config', str(config), '--topic', 'state', '--qos', '2', '--retain', '--timeout', '3']
+            with patch.object(shared_mqtt, 'publish_message', return_value=(True, 'sent')) as publish, patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', io.StringIO('æ\n trailing ')), contextlib.redirect_stdout(io.StringIO()):
+                rc = publisher.cli_main()
             self.assertEqual(rc, 0)
             publish.assert_called_once_with(settings, 'state', 'æ\n trailing ', qos=2, retain=True, timeout=3)
-            with patch.object(shared_mqtt, 'publish_message', return_value=(False, 'rejected')), patch.object(sys, 'stdin', io.StringIO('data')), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(publisher.cli_main(['--config', str(config), '--topic', 'state']), 1)
+            argv = ['mqtt.py', '--config', str(config), '--topic', 'state']
+            with patch.object(shared_mqtt, 'publish_message', return_value=(False, 'rejected')), patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', io.StringIO('data')), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(publisher.cli_main(), 1)
 
     def test_cli_help_and_config_errors(self):
-        """Help exits before input/network work; missing config exits nonzero."""
-        with patch.object(shared_mqtt, 'publish_message') as publish, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as result:
-                publisher.cli_main(['--help'])
+        """Help documents every flag and exits before input/network work."""
+        help_output = io.StringIO()
+        with patch.object(shared_mqtt, 'publish_message') as publish, contextlib.redirect_stdout(help_output), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(sys, 'argv', ['mqtt.py', '--help']), self.assertRaises(SystemExit) as result:
+                publisher.cli_main()
             self.assertEqual(result.exception.code, 0)
-            self.assertEqual(publisher.cli_main(['--config', '/nonexistent/homelab-config.json', '--topic', 'state']), 1)
+            help_text = help_output.getvalue()
+            for expected in (
+                '--config PATH', '--request-stdin', '--topic TOPIC', '--qos {0,1,2}',
+                '--retain', '--timeout SECONDS', 'payload verbatim from stdin',
+                'omit --retain for command/control messages',
+            ):
+                self.assertIn(expected, help_text)
+            with patch.object(sys, 'argv', ['mqtt.py', '--config', '/nonexistent/homelab-config.json', '--topic', 'state']):
+                self.assertEqual(publisher.cli_main(), 1)
             publish.assert_not_called()
 
     def test_shell_bridge_payload_and_failure_exit(self):
