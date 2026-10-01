@@ -150,7 +150,14 @@ class PanelMqttRuntime:
         ha_cfg = self._ha_config()
         if self._home_assistant_enabled() and topic == str(ha_cfg["status_topic"]).strip():
             if payload == str(ha_cfg["status_online_payload"]):
-                self._publish_home_assistant_snapshot()
+                # The broker replays a retained HA status immediately after subscribe.
+                # _connected() already published this connection's HA snapshot, so
+                # replaying it here would cause a duplicate discovery refresh. A live
+                # HA birth message (retain=False) still requests a fresh snapshot.
+                if retain:
+                    print("Homelab-panel HA status replay ignored: retained online payload", flush=True)
+                else:
+                    self._publish_home_assistant_snapshot()
             return
         self._handle_device_power_transition(topic, previous_payload, payload)
         self._process_remote_jobs_message(topic, payload)

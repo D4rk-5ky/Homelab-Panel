@@ -24,6 +24,32 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.26 — 2026-10-01
+
+### Avoid duplicate Home Assistant discovery refresh from retained birth replay
+
+- Fixed a Home Assistant/MQTT discovery refresh edge case in `PanelMqttRuntime._message()`. The panel already publishes a complete Home Assistant snapshot from `_connected()` after the broker connection is established; when the broker then replayed the retained `homeassistant/status = online` message to the new subscription, 0.0.25 treated that replay as a second birth event and immediately published the same discovery snapshot again.
+- Retained matching HA status replays are now ignored. A later **live** matching HA birth message (`retain=False`) still republishes availability, discovery, and cached state so Home Assistant can recover after its own restart. The configured status topic/payload and empty-topic opt-out are unchanged.
+- This change affects discovery refreshes only. MQTT button discovery documents still have no `state_topic`, button `payload_press` values and the panel control topic are unchanged, retained control messages are still rejected, and no button command is executed by the retained-status guard.
+- Updated the existing Home Assistant regression test to verify both sides of the rule: retained matching online replay publishes nothing, while a live matching birth still publishes the expected discovery/availability/cached state.
+- Updated `README.md`, `commented_code_map.md`, and the Home Assistant comments in `homelab-panel/configs/config.example.py` for the current behavior. No configuration key or available option was added or removed.
+- Existing help/version behavior, action allow-lists, path guards, authentication, job handling, power-script semantics, and unrelated MQTT routing remain unchanged.
+- Version advances exactly from `0.0.25` to `0.0.26`.
+
+## 0.0.25 — 2026-10-01
+
+### Safe help/version CLI across executable entry points
+
+- Added `shared_modules/version.py` as the single source used by Python commands to read the root `VERSION` file and attach a consistent `--version` action without hard-coding the release number in each executable.
+- `homelab-panel/app.py`, `homelab-control/homelab_control_command_listener.py`, and `homelab-control/homelab_control_status_indicator.py` now accept safe `-h` / `--help` and `--version`. These information-only paths run before Flask/Paho/active configuration imports. Unknown extra arguments are rejected with argparse exit status `2`; normal no-argument service behavior is unchanged.
+- Refactored the existing MQTT CLI parser into `build_cli_parser()` so one parser definition is reused by both the normal CLI and an information-only preflight. Added `--version`. `--help` / `--version` now work before `paho-mqtt` is imported; publication flags, stdin/config behavior, timeout semantics, retain safety, and worker mode remain unchanged.
+- Added shared shell argument handling in `scripts/homelab_action_common.sh`. The four bundled shutdown/reboot scripts now expose `-h` / `--help` and `--version` without invoking `shutdown`, reject unsupported arguments with status `2`, and keep the existing no-argument power actions byte-for-behavior equivalent.
+- Added direct information-only `--help` / `--version` handling to executable `homelab-control/modules/homelab_control_lib.sh`; when sourced by runtime code it skips this direct-execution guard and retains its existing config/status/MQTT behavior.
+- Added `tests/test_cli_entrypoints.py` covering Python help/version, unknown service flags, shell help/version safety, and harmless shim verification of the original no-argument shutdown/reboot arguments. Expanded the MQTT help regression to require `--version`.
+- Updated `README.md` for the current command surface only and updated `commented_code_map.md` for the new shared version helper, parser flow, shell CLI functions, and tests. The supplied disclaimer/liability text remains present with Homelab Panel anchors/links.
+- Audited all three tracked configuration examples; no configuration option changed in this release, so they intentionally remain unchanged.
+- Version advances exactly from `0.0.24` to `0.0.25`.
+
 ## 0.0.24 — 2026-09-27
 
 ### Optional job lifecycle timeout and Paho MQTT 1.x compatibility

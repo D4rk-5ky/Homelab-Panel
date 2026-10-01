@@ -176,12 +176,14 @@ Use broker ACLs to restrict who can publish to control topics. Website login doe
 | `discovery_prefix` | `"homeassistant"` | Must match Home Assistant's MQTT discovery prefix |
 | `state_prefix` | `"homelab-panel/ha"` | Remote sensor state topic prefix |
 | `availability_topic` | `"homelab-panel/availability"` | Panel online/offline topic used by HA entities |
-| `status_topic` | `"homeassistant/status"` | HA birth/status topic; online messages trigger rediscovery; `""` disables this subscription |
-| `status_online_payload` | `"online"` | Exact payload on `status_topic` that triggers rediscovery; match any HA birth-message customization |
+| `status_topic` | `"homeassistant/status"` | HA birth/status topic; a **live** matching online message triggers rediscovery, while a retained replay after panel subscribe is ignored; `""` disables this subscription |
+| `status_online_payload` | `"online"` | Exact payload on `status_topic` that a live HA birth message must match to trigger rediscovery; match any HA birth-message customization |
 | `qos` | `1` | QoS for discovery, HA state, and panel availability publication |
 | `retain` | `True` | Retains discovery documents at the broker; HA state/availability are retained independently |
 
 Keep discovery, state, availability, HA status, and control topics distinct. The HA button's own MQTT command always has `retain=False`; it uses HA's default button command QoS of `0`. Discovery retention does not change the separate `MQTT_CONFIG["retain"]` setting used for forwarding remote commands.
+
+The panel publishes one Home Assistant snapshot as part of its own MQTT connect callback. MQTT brokers normally replay the retained HA `online` status when the panel then subscribes to `status_topic`; that replay is deliberately ignored because the connection snapshot has already been sent. A later **live** HA birth `online` message still republishes the snapshot, so an HA restart can recover discovery without creating an immediate duplicate discovery refresh on every panel connection. This changes discovery refresh behavior only; it never executes a Home Assistant button command.
 
 ### `WEB_AUTH_CONFIG`
 
@@ -348,9 +350,22 @@ The panel and agent each maintain their own allow-list. MQTT text is never execu
 
 ### Application CLI
 
-The three long-running Python applications have **no CLI argument parser**. Run them as shown above. Their `--help` is not implemented and must not be treated as a safe dry run: they can start normal work despite extra arguments. The power action scripts also have no `--help`, dry-run, or configurable-delay option.
+Every directly executable project command now has a safe information-only CLI surface. The three long-running Python programs accept only `-h` / `--help` and `--version`; they have no runtime tuning flags. Unknown extra arguments are rejected with exit status `2` before Flask, MQTT, or active configuration is loaded. Runtime behavior still comes from the tracked configuration files.
 
-The shared `shared_modules/mqtt.py` module is also the standalone publishing helper. Its CLI supports the flags below and has a safe `--help`; it publishes only and does not launch either application service.
+Examples:
+
+```bash
+python3 homelab-panel/app.py --help
+python3 homelab-panel/app.py --version
+python3 homelab-control/homelab_control_status_indicator.py --help
+python3 homelab-control/homelab_control_command_listener.py --version
+```
+
+The four bundled power scripts also accept only `-h` / `--help` and `--version`. These information-only flags exit before optional Homelab Control configuration is loaded and before any `shutdown` command is run. Running a power script with **no arguments** keeps its existing action; any other argument is rejected with exit status `2`. There is still no dry-run or configurable-delay flag.
+
+`shared_modules/mqtt.py` is the standalone publishing helper. It has the same safe `--version` flag plus its MQTT publishing options documented below. Its `--help` / `--version` preflight runs before importing Paho, so those information-only commands work even on a host where `paho-mqtt` is not installed.
+
+The executable helper libraries `scripts/homelab_action_common.sh` and `homelab-control/modules/homelab_control_lib.sh` expose `--help` / `--version` when run directly. They are still intended to be sourced by the action/runtime code and have no standalone operational mode.
 
 ### Web routes
 
@@ -405,17 +420,45 @@ The agent's `topics.control_power` accepts only the current JSON job envelope:
 
 ### Command flag reference
 
-The only project entry point with an argument parser is the one-shot publisher:
+#### Long-running Python programs
+
+These commands all expose the same two information-only flags:
+
+- `python3 homelab-panel/app.py`
+- `python3 homelab-control/homelab_control_status_indicator.py`
+- `python3 homelab-control/homelab_control_command_listener.py`
+
+| Flag | Value / default | What it does | Safety / behavior |
+|---|---|---|---|
+| `-h`, `--help` | No value | Prints the command description, supported flags, and exits `0` | Runs before Flask/Paho/config loading and does not start the service |
+| `--version` | No value | Prints the executable name plus the root `VERSION` value and exits `0` | Runs before service startup and does not contact MQTT or read active config |
+
+There are no operational CLI overrides for bind address, ports, topics, credentials, polling intervals, devices, or commands. Configure those in `homelab-panel/configs/` and `homelab-control/configs/config.json`. Unknown arguments exit `2`.
+
+#### Bundled power scripts
+
+`scripts/shutdown_delay.sh`, `shutdown_cancel.sh`, `reboot_delay.sh`, and `reboot_cancel.sh` accept:
+
+| Flag | What it does |
+|---|---|
+| `-h`, `--help` | Prints the script action and exits without invoking `shutdown` |
+| `--version` | Prints the script name and project version, then exits without invoking `shutdown` |
+
+No arguments means **perform the existing power action**. Any other argument is rejected with exit status `2`. There is no dry-run and no CLI delay override.
+
+#### MQTT publisher
 
 ```bash
 python3 shared_modules/mqtt.py --help
+python3 shared_modules/mqtt.py --version
 ```
 
-`--help` is safe: argument parsing exits before the helper reads stdin/configuration or contacts a broker. Normal publishing mode reads the MQTT payload **verbatim from stdin**. The table below lists every supported flag, including the internal worker flag so the complete interface is documented.
+`--help` is safe: argument parsing exits before the helper reads stdin/configuration or contacts a broker. `--help` and `--version` are handled before Paho is imported. Normal publishing mode reads the MQTT payload **verbatim from stdin**. The table below lists every supported flag, including the internal worker flag so the complete interface is documented.
 
 | Publisher flag | Value / required / default | What it does | Example / safety notes |
 |---|---|---|---|
 | `-h`, `--help` | No value; optional | Prints the complete CLI help and exits with status `0` | Safe inspection mode; no MQTT or payload work is started |
+| `--version` | No value; optional | Prints the executable name plus the root project version and exits `0` | Information-only; no Paho import, config read, stdin read, or broker connection |
 | `--config PATH` | Path string; required for normal CLI mode; mutually exclusive with `--request-stdin` | Opens JSON at `PATH` and reads its required top-level `mqtt` object for host/port/credentials | `--config homelab-control/configs/config.json`; credentials stay in the file rather than argv |
 | `--request-stdin` | Boolean flag; **internal only**; mutually exclusive with `--config` | Reads one complete JSON worker request from stdin and prints JSON `[success, message]` | Used by `publish_message()` so a parent process can enforce a hard timeout. Do not use this as the normal manual interface. |
 | `--topic TOPIC` | String; required with `--config` | Selects one exact MQTT destination. Empty topics and `+` / `#` wildcard topics are rejected before connecting. | `--topic homelab-panel/control`; the message body itself still comes from stdin |
@@ -448,7 +491,7 @@ printf '%s' '{"target":"local","command":"shutdown_cancel"}' \
 
 Normal helper exit codes are `0` for a completed publication, `1` for config/input/publication failure, and `2` for invalid CLI syntax/arguments from `argparse`. In internal `--request-stdin` mode the helper reports publication success/failure in the JSON response; a syntactically valid worker invocation returns process status `0` after producing that response, and the parent interprets the boolean result.
 
-The remaining flags below belong to external tools. They are **not** arguments to `app.py`, either Homelab Control daemon, or the bundled power scripts.
+The remaining flags below belong to external tools. They are **not** additional application flags for `app.py`, either Homelab Control daemon, or the bundled power scripts.
 
 | Tool / flag | Value and effect | Example / source |
 |---|---|---|
@@ -466,6 +509,8 @@ The remaining flags below belong to external tools. They are **not** arguments t
 | `python3 -m unittest ...` | `-m` runs a module; `discover` enables test discovery; `-s tests` selects the test directory; `-v` prints individual results | `python3 -B -m unittest discover -s tests -v` from the project root |
 
 ### Bundled power scripts and external flags
+
+All four action scripts perform the listed action only when run with no arguments. `-h` / `--help` and `--version` are information-only and exit first; unsupported arguments exit `2`.
 
 | Script / command | Behavior |
 |---|---|
@@ -499,7 +544,7 @@ Runtime data lives under `homelab-panel/state/`, `homelab-control/state/`, and `
 
 ## Troubleshooting
 
-If HA buttons do not appear, verify `enabled=True`, matching brokers/discovery prefixes, a nonempty panel control topic, and MQTT ACL permissions for discovery/control/status topics. Restart the panel after changing its Python configuration. If HA's birth message is customized, match `status_topic` and `status_online_payload`.
+If HA buttons do not appear, verify `enabled=True`, matching brokers/discovery prefixes, a nonempty panel control topic, and MQTT ACL permissions for discovery/control/status topics. Restart the panel after changing its Python configuration. If HA's birth message is customized, match `status_topic` and `status_online_payload`. A retained matching status received immediately after the panel subscribes is expected to be logged as ignored; only a live later HA birth triggers rediscovery because the panel already published its snapshot when the MQTT connection came up.
 
 Use `/mqtt-diagnostics` to inspect subscriptions and received messages, including HA's status topic when enabled. If a remote action fails, check the agent allow-list, executable script location, dependencies, service logs, and published job result. HA local actions need the same sudo permissions as the webpage.
 

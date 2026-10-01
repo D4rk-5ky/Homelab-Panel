@@ -177,10 +177,17 @@ class HomeAssistantTests(unittest.TestCase):
                 self.assertFalse(self.panel.ACTION_MANAGER.run_local_script(name)[0])
             run.assert_not_called()
 
-    def test_home_assistant_birth_republishes_discovery_and_cached_state(self):
+    def test_home_assistant_birth_ignores_retained_replay_and_live_birth_republishes(self):
         self.panel.HOME_ASSISTANT_CONFIG["retain"] = False
         self.panel.DEVICE_STATUS_CACHE["aoostar_wtr"] = {"overall": "online", "ping_ok": True, "mqtt_online_ok": True}
+
+        # A retained status replay arrives after the panel subscribes. _connected()
+        # already published this connection's snapshot, so it must not publish again.
         self.panel.MQTT_RUNTIME._message("homeassistant/status", "online", True, 1)
+        self.assertEqual(self.published, [])
+
+        # A live HA birth event still requests rediscovery and cached state.
+        self.panel.MQTT_RUNTIME._message("homeassistant/status", "online", False, 1)
         self.assertEqual(len(self.button_configs()), 15)
         self.assertTrue(any(topic == "homelab-panel/availability" and payload == "online" for topic, payload, _, _ in self.published))
         self.assertTrue(any(topic == "homelab-panel/ha/aoostar_wtr/state" for topic, _, _, _ in self.published))

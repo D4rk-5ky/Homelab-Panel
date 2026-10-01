@@ -13,6 +13,13 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from shared_modules.version import build_info_parser
+
+if __name__ == "__main__":
+    build_info_parser(
+        'Run the Homelab Control MQTT command listener using the allow-list in homelab-control/configs/config.json.'
+    ).parse_args()
+
 from shared_modules.mqtt import MqttClient
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")

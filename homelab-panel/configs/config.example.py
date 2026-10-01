@@ -33,7 +33,9 @@ HOME_ASSISTANT_CONFIG = {
     "discovery_prefix": "homeassistant",
     "state_prefix": "homelab-panel/ha",
     "availability_topic": "homelab-panel/availability",
-    # Home Assistants birth-topic/payload. Panelet genudsender discovery ved online.
+    # Home Assistants birth-topic/payload. En live online-besked genudsender discovery.
+    # En retained online-besked, som broker replay'er ved subscribe, ignoreres fordi
+    # panelet allerede har sendt et snapshot i MQTT connect-callbacken.
     # Brug tom status_topic for at deaktivere denne genudsendelse.
     "status_topic": "homeassistant/status",
     "status_online_payload": "online",

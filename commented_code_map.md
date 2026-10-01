@@ -4,6 +4,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 ## `homelab-panel/app.py`
 
+When executed directly, the shared `build_info_parser()` runs before Flask, Paho, or active panel configuration is imported. `-h` / `--help` and `--version` therefore exit safely; unknown CLI arguments fail with argparse status `2`. Import behavior remains unchanged so the existing Flask/MQTT initialization path is preserved.
+
 | Function | What / why |
 |---|---|
 | `web_auth_enabled()` | Returns whether optional session login is enabled; centralizes the feature gate so routes do not implement their own auth rules. |
@@ -122,7 +124,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `PanelMqttRuntime.build_diagnostics()` | Builds `/mqtt-diagnostics` rows from panel cache/subscription metadata and expected device topics. |
 | `PanelMqttRuntime._connected()` | Runs only panel work after the shared client has connected/subscribed: update diagnostics, publish HA snapshot and record connect/reconnect history. |
 | `PanelMqttRuntime._disconnected()` | Runs only panel disconnect work: update diagnostics and append per-device broker-disconnect history. |
-| `PanelMqttRuntime._message()` | Handles the shared decoded callback shape `(topic, payload, retain, qos)`: cache, retained-control rejection, worker dispatch, HA birth, status/jobs/boot routing. |
+| `PanelMqttRuntime._message()` | Handles the shared decoded callback shape `(topic, payload, retain, qos)`: cache, retained-control rejection, worker dispatch, HA birth, status/jobs/boot routing. Retained HA `online` replays are ignored because `_connected()` already published the connection snapshot; only live matching birth messages request another snapshot, preventing duplicate discovery refreshes without suppressing real HA restarts. |
 | `PanelMqttRuntime._ensure_transport()` | Creates one shared `MqttClient` with current panel settings, subscriptions, callbacks, reconnect policy and optional HA Last Will. |
 | `PanelMqttRuntime.start()` | Starts the panel monitor and the shared client in asynchronous-threaded reconnect mode. |
 
@@ -146,6 +148,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 - `templates/login.html` — minimal username/password session login page.
 
 ## `homelab-control/homelab_control_command_listener.py`
+
+Direct execution first runs the shared information-only parser. `--help` / `--version` therefore do not need the active JSON config or Paho; normal no-argument execution then continues into the unchanged config load and MQTT listener path.
 
 | Function | What / why |
 |---|---|
@@ -171,6 +175,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 `control_power` accepts only JSON such as `{"command":"run_watchtower","job_id":"abc123","source":"Homelab Panel"}`. All three fields are required, `command` is looked up in `config.json -> commands`, and received text is never executed as shell code.
 
 ## `homelab-control/homelab_control_status_indicator.py`
+
+Direct execution first runs the shared information-only parser. `--help` / `--version` exit before active config/Paho loading; no-argument execution continues through the existing status service initialization.
 
 | Function | What / why |
 |---|---|
@@ -204,6 +210,10 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 | Function | What / why |
 |---|---|
+| `project_version()` | Reads the root `VERSION` file for shell `--version`; falls back to `unknown` only when the release metadata is missing. |
+| `action_cli_description()` | Maps the current action-script filename to the human-readable action shown by `--help`; keeps one shared parser/help implementation for all four power scripts. |
+| `show_action_cli_help()` | Prints the script usage, action description, and the only supported information flags without executing a power action. |
+| `handle_action_cli_args()` | Allows no arguments for normal power behavior, exits safely for `-h`/`--help`/`--version`, and rejects every other argument with status `2` before optional control config or `shutdown` is touched. |
 | `run_shutdown_command()` | Runs shutdown directly as root or through sudo otherwise; shared scripts work for remote agent and local panel. |
 | `json_get()` | Reads required dotted JSON config key with Python parser. |
 | `ensure_dirs()` | Creates remote state/log directories. |
@@ -220,17 +230,17 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 ## `scripts/` shared power scripts
 
-- `scripts/shutdown_delay.sh` — sets shutdown pending/current history, calls `shutdown -h +1`, then records success/failure.
-- `scripts/shutdown_cancel.sh` — calls `shutdown -c`, restores idle, and records success/failure.
-- `scripts/reboot_delay.sh` — sets reboot pending/current history, calls `shutdown -r +1`, then records success/failure.
-- `scripts/reboot_cancel.sh` — calls `shutdown -c`, restores idle, and records success/failure.
-- `scripts/homelab_action_common.sh` — resolves `SCRIPT_DIR`, then the parent project root, optionally loads `homelab-control/modules/homelab_control_lib.sh` when run as root and `homelab-control/configs/config.json` exists, and selects root-vs-sudo shutdown execution.
+- `scripts/shutdown_delay.sh` — with no arguments sets shutdown pending/current history, calls `shutdown -h +1`, then records success/failure; shared `--help` / `--version` exit before that action.
+- `scripts/shutdown_cancel.sh` — with no arguments calls `shutdown -c`, restores idle, and records success/failure; information-only flags do not invoke shutdown.
+- `scripts/reboot_delay.sh` — with no arguments sets reboot pending/current history, calls `shutdown -r +1`, then records success/failure; information-only flags do not invoke reboot.
+- `scripts/reboot_cancel.sh` — with no arguments calls `shutdown -c`, restores idle, and records success/failure; information-only flags do not invoke shutdown.
+- `scripts/homelab_action_common.sh` — resolves the project root, owns the shared shell version/help/argument guard, then only for normal no-argument actions optionally loads `homelab-control/modules/homelab_control_lib.sh` when root/configured and selects root-vs-sudo shutdown execution.
 
 ## Component-local folders
 
 - `homelab-panel/configs/__init__.py` — marks the panel configuration directory as an explicit Python package. The active `config.py` and `devices.py` are imported from here, so `app.py` remains directly executable without another service or a special working directory.
 - `homelab-panel/modules/__init__.py` — marks the panel implementation directory as an explicit Python package. The entry point imports `modules.panel_actions`, `modules.panel_home_assistant`, and `modules.panel_mqtt`; the modules are libraries, not standalone services.
-- `homelab-control/modules/homelab_control_lib.sh` — reusable remote-agent shell module for config access, status/history writes, and retained MQTT telemetry. It derives the agent root from its own location after moving under `modules/`.
+- `homelab-control/modules/homelab_control_lib.sh` — reusable remote-agent shell module for config access, status/history writes, and retained MQTT telemetry. When executed directly it exposes only safe `--help` / `--version`; when sourced it skips that standalone guard and continues with the existing config-backed functions.
 - `homelab-control/configs/` — owns the remote agent JSON config/example. Both Python entry points and the shell module resolve `configs/config.json` relative to the agent directory, so they do not depend on the current working directory.
 
 ## Configuration files
@@ -275,7 +285,7 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 
 - `HOME_ASSISTANT_CONFIG.enabled` keeps discovery optional, with default `False`.
 - `status_topic` is explicitly configured (the example uses `homeassistant/status`); an empty string disables the birth subscription. `status_online_payload` is also an explicit current key (example `online`).
-- On broker connect or HA birth, `HomeAssistantIntegration.publish_snapshot()` publishes discovery, online availability and cached sensor state. Subsequent monitor passes publish fresh state.
+- On panel broker connect, `HomeAssistantIntegration.publish_snapshot()` publishes discovery, online availability and cached sensor state once. A live matching HA birth message requests another snapshot. A retained matching status replay received immediately after subscribe is deliberately ignored because the connect callback already published that snapshot. Subsequent monitor passes publish fresh state.
 - Remote discovery topics remain `<discovery_prefix>/button/homelab_panel_<device_id>/<button_id>/config`; Wake uses the existing `wake` ID. Local buttons use `<discovery_prefix>/button/homelab_local_panel/<button_id>/config` to avoid a remote device called `local` colliding with the host.
 - Remote `payload_press` is `{"target":"remote","device_id":"...","command":"..."}`. Local `payload_press` is `{"target":"local","command":"..."}`. Both go to the panel control topic and select configured IDs rather than executable text.
 - HA button labels come from the same `label` fields as web buttons. Local grouping requires `LOCAL_SERVER.name` as the Home Assistant device name, keeping the webpage section heading (`title`) separate from HA identity. Cancel-WoL stays registered in HA and refuses cancellation without an active job.
@@ -296,9 +306,9 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 
 | Command / block | What / why |
 |---|---|
-| `python3 app.py` | Starts Flask plus the panel MQTT/status background workers; there are no app CLI flags. |
-| `python3 homelab_control_command_listener.py` | Loads the agent allow-list and runs the MQTT command listener. |
-| `python3 homelab_control_status_indicator.py` | Starts Linux availability/boot/uptime/current-status publication; Linux `/proc` supplies uptime and boot identity. |
+| `python3 app.py` | With no arguments starts Flask plus the panel MQTT/status background workers; `-h`/`--help` and `--version` are safe information-only flags and all other args are rejected. |
+| `python3 homelab_control_command_listener.py` | With no arguments loads the agent allow-list and runs the MQTT command listener; `--help`/`--version` exit before config/Paho loading. |
+| `python3 homelab_control_status_indicator.py` | With no arguments starts Linux availability/boot/uptime/current-status publication; `--help`/`--version` exit before config/Paho loading. Linux `/proc` supplies uptime and boot identity. |
 | `python3 shared_modules/mqtt.py --config PATH --topic TOPIC --qos 1 --retain` | Publishes the stdin payload as retained telemetry through Paho. The same CLI without `--retain` can send commands. The JSON config supplies credentials without placing them in argv. |
 | `wakeonlan -i BROADCAST MAC` | Sends a magic packet to the configured broadcast destination. |
 | `ping -c 1 -W TIMEOUT HOST` | Gets one bounded reachability sample: `-c 1` sends one probe and `-W` uses seconds on Linux or milliseconds on macOS; the caller also applies a three-second process timeout. |
@@ -310,21 +320,24 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 | `journalctl -u UNIT -f` | Restricts log output to one unit and follows new messages. |
 | `python3 -B -m unittest discover -s tests -v` | Runs the offline regression checks without writing bytecode; verbose discovery selects the included test directory. |
 
-### `shared_modules/mqtt.py` CLI flags
+### Project CLI flags
 
-`cli_main()` is the only project-owned argument parser. The long-running panel/agent programs and the power scripts do not parse CLI flags, so their behavior must be configured through the tracked config examples rather than command-line switches.
+The long-running Python entry points use `shared_modules/version.py -> build_info_parser()` and therefore expose only `-h` / `--help` and `--version`. They reject unknown options before service imports/configuration. The four power-action scripts reuse `handle_action_cli_args()` for the same information-only surface; no arguments still perform the existing action.
+
+`shared_modules/mqtt.py` owns the only operational project CLI flags. `build_cli_parser()` builds the complete parser once, `cli_main()` executes it for normal publishing, and a top-level information-only preflight uses that same parser before Paho is imported.
 
 | Flag | What it does / why it exists |
 |---|---|
-| `-h`, `--help` | Lets an operator inspect the complete publisher interface without reading stdin/config or contacting MQTT. |
-| `--config PATH` | Selects normal CLI mode and reads the required top-level `mqtt` object from JSON. Broker credentials therefore remain in the config file instead of argv. |
-| `--request-stdin` | Internal mutually exclusive worker mode used by `publish_message()`. The entire request arrives as JSON on stdin and the worker emits `[success, message]`, allowing the parent to impose a hard process timeout. |
-| `--topic TOPIC` | Selects the exact publication destination in normal mode. `_publish_once()` rejects empty names and MQTT `+` / `#` wildcard publication topics before connecting. |
-| `--qos {0,1,2}` | Selects protocol delivery QoS; normal CLI default is `1`. Python production callers pass QoS explicitly instead of relying on this CLI default. |
-| `--retain` | Enables retained publication; default is off. It is used by retained telemetry helpers and must remain off for command/control messages to avoid broker replay. |
-| `--timeout SECONDS` | Sets the positive finite end-to-end publication deadline, default `20` seconds, including worker startup, DNS, connect, publish and acknowledgement. Decimal seconds are accepted. |
+| `-h`, `--help` | Every directly executable project command exposes safe help. Long-running services and power scripts exit before operational work; the MQTT publisher shows its complete publishing interface. |
+| `--version` | Every directly executable project command reports the root `VERSION` value and exits before operational work. |
+| `--config PATH` | MQTT publisher only: selects normal CLI mode and reads the required top-level `mqtt` object from JSON. Broker credentials therefore remain in the config file instead of argv. |
+| `--request-stdin` | MQTT publisher internal mutually exclusive worker mode used by `publish_message()`. The entire request arrives as JSON on stdin and the worker emits `[success, message]`, allowing the parent to impose a hard process timeout. |
+| `--topic TOPIC` | MQTT publisher only: selects the exact publication destination. `_publish_once()` rejects empty names and MQTT `+` / `#` wildcard publication topics before connecting. |
+| `--qos {0,1,2}` | MQTT publisher only: selects protocol delivery QoS; normal CLI default is `1`. Python production callers pass QoS explicitly instead of relying on this CLI default. |
+| `--retain` | MQTT publisher only: enables retained publication; default is off. It is used by retained telemetry helpers and must remain off for command/control messages to avoid broker replay. |
+| `--timeout SECONDS` | MQTT publisher only: sets the positive finite end-to-end publication deadline, default `20` seconds, including worker startup, DNS, connect, publish and acknowledgement. Decimal seconds are accepted. |
 
-The parser help includes the normal stdin contract, a retained-telemetry example, and the command-retain safety warning so the executable itself remains self-describing even when README.md is not open.
+The MQTT parser help includes the stdin contract, retained-command safety warning, and version flag. Power-script help explicitly states that no arguments perform the action and that no dry-run or delay override exists.
 
 ### Shell plumbing and service commands
 
@@ -367,12 +380,22 @@ Panel tests load the real Flask/Jinja entry point with example configuration, te
 | `test_retained_panel_control_is_rejected()` | Verifies retained local/remote panel-control messages never start execution workers. |
 | `test_live_panel_control_requires_explicit_target_and_dispatches_worker()` | Verifies fresh explicit-target envelopes are dispatched and target-less remote envelopes are rejected. |
 | `test_local_script_path_guards_are_preserved()` | Checks traversal, absolute paths, symlink escapes, missing files and non-executable files without running a command. |
-| `test_home_assistant_birth_republishes_discovery_and_cached_state()` | Verifies the configured HA birth payload republishes discovery/availability/cached state without ping I/O. |
+| `test_home_assistant_birth_ignores_retained_replay_and_live_birth_republishes()` | Verifies a retained HA online replay produces no duplicate snapshot while a live configured HA birth payload still republishes discovery/availability/cached state without ping I/O. |
 | `test_birth_topic_customization_and_disable_are_current_config()` | Verifies explicit custom HA status topic/payload and empty-topic opt-out. |
 | `test_confirmation_title_placeholder_resolves_and_is_js_safe()` | Verifies `$TITLE` replacement and JSON-safe browser rendering for quoted titles. |
 | `test_job_lifecycle_timeout_is_optional_distinct_and_non_active()` | Verifies configured 60-second shutdown/reboot lifecycle timeouts, visible remaining time, non-mutating `timed_out` conversion, optional/no-timeout behavior, and protection of already-terminal success. |
 | `test_combined_jobs_and_power_confirmation_use_timed_out_state()` | Verifies combined dashboard jobs expire to non-active `timed_out` and the shutdown/reboot confirmation worker uses the same distinct timeout result rather than failure. |
 | `test_webpages_render()` | Exercises dashboard, history, diagnostics and login rendering under isolated I/O. |
+
+## `shared_modules/version.py`
+
+Small dependency-free release/CLI helper imported before Flask/Paho/config by information-only entry-point paths.
+
+| Function | What / why |
+|---|---|
+| `get_project_version()` | Reads the root `VERSION` file once per request and returns `unknown` only when release metadata is unavailable; avoids hard-coding the version in each executable. |
+| `build_info_parser()` | Creates the shared parser for long-running commands with argparse `--help` plus the common `--version`; because it depends only on the standard library it can run before application dependencies/config. |
+| `add_version_argument()` | Adds the same `--version` action/help text to richer parsers such as the MQTT publisher so all commands report one source-of-truth version. |
 
 ## `shared_modules/mqtt.py`
 
@@ -380,6 +403,7 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 
 | Function / method | What / why |
 |---|---|
+| `build_cli_parser()` | Builds the complete standalone publisher parser, including `--version`, without importing/starting MQTT work; it is reused by information-only preflight and `cli_main()`. |
 | `MqttClient.__init__()` | Stores common broker settings, optional client ID/LWT/subscription provider/component callbacks and reconnect policy without knowing panel/control behavior. |
 | `MqttClient._build_client()` | The single Paho client-construction path: MQTT 3.1.1, auth, LWT, reconnect delay and shared callbacks. It requests callback API v2 when Paho exposes `CallbackAPIVersion` and omits that v2-only constructor keyword for Paho 1.x. |
 | `MqttClient._subscription_items()` | Resolves the current static/callable iterable of `(topic, qos)` pairs into unique sorted subscriptions; obsolete string-only subscription entries are not accepted. |
@@ -393,7 +417,7 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 | `on_connect()` *(nested in `_publish_once`)* | Captures CONNACK for the bounded publisher and accepts both Paho 1.x and Paho 2.x callback argument counts without exposing a component callback. |
 | `network_step()` *(nested in `_publish_once`)* | Advances the disposable Paho loop only within the remaining deadline. |
 | `publish_message()` | Runs `_publish_once()` in a child invocation of this same module so DNS/connect/send are bounded by a hard parent timeout and credentials/payload remain off argv. |
-| `cli_main()` | Implements the standalone `shared_modules/mqtt.py` CLI. It defines every flag, value metavariable, default/safety help text, the normal stdin example, normal config/topic validation, the internal JSON worker path, and exit-status mapping. |
+| `cli_main()` | Executes the parser from `build_cli_parser()`, then handles normal config/topic publishing, the internal JSON worker path, and exit-status mapping without duplicating flag definitions. |
 
 `shared_modules/` intentionally contains no panel history/HA/actions and no control jobs/status logic. Those are application responsibilities rather than reusable transport.
 
@@ -415,7 +439,7 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 | `test_parent_bounds_worker_and_keeps_credentials_off_argv()` | Verifies the hard parent timeout and stdin-only request carrying credentials/payload. |
 | `test_panel_actions_reuse_shared_publisher_and_current_json_envelope()` | Verifies panel remote actions call shared `publish_message()` with current `command`/`job_id`/`source` JSON. |
 | `test_cli_reads_credentials_from_config_and_payload_from_stdin()` | Verifies CLI config/payload handling and publication exit status. |
-| `test_cli_help_and_config_errors()` | Verifies safe help lists every supported publisher flag plus stdin/retain safety guidance, then verifies missing-config failure without network work. |
+| `test_cli_help_and_config_errors()` | Verifies safe help lists every supported publisher flag including `--version`, plus stdin/retain safety guidance, then verifies missing-config failure without network work. |
 | `test_shell_bridge_payload_and_failure_exit()` | Executes the actual shell library with a shim to verify exact stdin/argv and failure propagation to shell callers. |
 | `WireTests.read_packet()` | Reads one MQTT packet including its variable-length remaining-length field. |
 | `read_string()` | Decodes one MQTT length-prefixed byte string. |
@@ -424,6 +448,18 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 | `test_real_paho_qos_zero_one_two_and_retention()` | Verifies real Paho wire behavior for auth, exact bytes, retain and QoS 0/1/2. |
 | `test_real_paho_rejected_connection_sends_no_command()` | Verifies rejected real CONNACK sends no PUBLISH. |
 | `test_real_paho_missing_ack_times_out_and_closes()` | Verifies missing acknowledgement causes bounded uncertain-delivery failure and closure. |
+
+## `tests/test_cli_entrypoints.py`
+
+| Function / method | What / why |
+|---|---|
+| `CliEntrypointTests.run_command()` | Runs one project command from the repository root with captured output and a hard test timeout. |
+| `test_python_entrypoints_have_safe_help_and_version()` | Proves all four executable Python entry points expose help/version without installed Flask/Paho or active config. |
+| `test_long_running_python_entrypoints_reject_unknown_flags_before_dependencies()` | Confirms unsupported service flags return argparse status `2` before missing dependencies/config can start normal work. |
+| `CliEntrypointTests.shell_test_env()` | Builds a temporary PATH with harmless `id`, `shutdown`, and `sudo` shims plus a marker file so power-script tests cannot touch the real host. |
+| `test_power_scripts_help_version_and_unknown_args_do_not_execute_actions()` | Confirms info flags and invalid args never invoke the shutdown shim. |
+| `test_power_scripts_keep_no_argument_actions()` | Executes each action script against the harmless shutdown shim and verifies the exact original `shutdown -h +1`, `-r +1`, or `-c` arguments are preserved. |
+| `test_executable_shell_helpers_have_information_only_cli()` | Verifies both executable helper libraries expose direct `--help` / `--version` while remaining non-operational helpers. |
 
 ## Release support files
 

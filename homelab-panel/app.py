@@ -17,6 +17,14 @@ if APP_DIR not in sys.path:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from shared_modules.version import build_info_parser
+
+if __name__ == "__main__":
+    build_info_parser(
+        "Run the Homelab Panel web interface plus its MQTT and status background workers. "
+        "Runtime behavior is configured in homelab-panel/configs/."
+    ).parse_args()
+
 from flask import Flask, render_template, redirect, url_for, flash, request, session
 from configs.config import (
     WOL_BROADCAST,

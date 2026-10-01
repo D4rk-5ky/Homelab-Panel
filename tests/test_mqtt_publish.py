@@ -251,7 +251,7 @@ class PublisherTests(unittest.TestCase):
             help_text = help_output.getvalue()
             for expected in (
                 '--config PATH', '--request-stdin', '--topic TOPIC', '--qos {0,1,2}',
-                '--retain', '--timeout SECONDS', 'payload verbatim from stdin',
+                '--retain', '--timeout SECONDS', '--version', 'payload verbatim from stdin',
                 'omit --retain for command/control messages',
             ):
                 self.assertIn(expected, help_text)

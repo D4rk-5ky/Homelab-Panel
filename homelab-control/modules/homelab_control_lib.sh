@@ -15,6 +15,40 @@ LAST_UPDATED_FILE="${STATE_DIR}/last_updated"
 HISTORY_FILE="${STATE_DIR}/history.json"
 HISTORY_LOCK_FILE="${STATE_DIR}/history.lock"
 COMMAND_LOG_FILE="${LOG_DIR}/commands.log"
+VERSION_FILE="${BASE_DIR}/../VERSION"
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    version="unknown"
+    if [[ -r "${VERSION_FILE}" ]]; then
+        version="$(tr -d '\r\n' < "${VERSION_FILE}")"
+    fi
+    case "${1:-}" in
+        -h|--help)
+            cat <<'EOF'
+Usage: homelab_control_lib.sh [--help | --version]
+
+Sourced helper for Homelab Control status/history/MQTT functions.
+It has no standalone operational mode.
+
+  -h, --help     show this help and exit
+      --version  show the Homelab Panel project version and exit
+EOF
+            exit 0
+            ;;
+        --version)
+            printf 'homelab_control_lib.sh %s\n' "${version}"
+            exit 0
+            ;;
+        '')
+            printf 'homelab_control_lib.sh is a sourced helper and has no standalone operational mode.\n' >&2
+            exit 2
+            ;;
+        *)
+            printf 'Error: unknown argument: %s\n' "$1" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 json_get() {
     local key="$1"

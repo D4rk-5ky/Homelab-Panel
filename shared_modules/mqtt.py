@@ -10,6 +10,87 @@ import subprocess
 import sys
 import time
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared_modules.version import add_version_argument
+
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    """Build the standalone publisher parser without starting MQTT work."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Publish exactly one MQTT message using broker settings from a "
+            "Homelab Control-style JSON config."
+        ),
+        epilog=(
+            "Normal mode reads the MQTT payload verbatim from stdin.\n"
+            "Example:\n"
+            "  printf '%s' 'online' | python3 shared_modules/mqtt.py "
+            "--config homelab-control/configs/config.json "
+            "--topic host/status/power --qos 1 --retain\n\n"
+            "Safety: omit --retain for command/control messages. "
+            "--request-stdin is reserved for the internal bounded worker."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--config",
+        metavar="PATH",
+        help=(
+            "JSON config path for normal CLI use; reads the required top-level "
+            "mqtt object (mutually exclusive with --request-stdin)"
+        ),
+    )
+    source.add_argument(
+        "--request-stdin",
+        action="store_true",
+        help=(
+            "INTERNAL ONLY: read the complete worker request as JSON from "
+            "stdin and print a JSON [success, message] response"
+        ),
+    )
+    parser.add_argument(
+        "--topic",
+        metavar="TOPIC",
+        help=(
+            "exact destination topic, required with --config; '+' and '#' "
+            "wildcards are rejected; payload is read verbatim from stdin"
+        ),
+    )
+    parser.add_argument(
+        "--qos",
+        type=int,
+        choices=(0, 1, 2),
+        default=1,
+        metavar="{0,1,2}",
+        help="MQTT delivery QoS for normal CLI mode (default: 1)",
+    )
+    parser.add_argument(
+        "--retain",
+        action="store_true",
+        help="retain telemetry at the broker (default: off); never use for commands",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=20,
+        metavar="SECONDS",
+        help=(
+            "positive finite total timeout for process startup, DNS, connect, "
+            "publish and required acknowledgement (default: 20 seconds)"
+        ),
+    )
+    add_version_argument(parser)
+    return parser
+
+
+if __name__ == "__main__" and any(arg in {"-h", "--help", "--version"} for arg in sys.argv[1:]):
+    # Keep information-only commands usable even when paho-mqtt is not installed.
+    build_cli_parser().parse_args()
+
 import paho.mqtt.client as mqtt
 
 
@@ -236,67 +317,7 @@ def publish_message(settings: dict, topic: str, payload: str, *, qos: int,
 
 def cli_main() -> int:
     """Run the standalone one-shot MQTT CLI used by shell/service callers."""
-    parser = argparse.ArgumentParser(
-        description=(
-            "Publish exactly one MQTT message using broker settings from a "
-            "Homelab Control-style JSON config."
-        ),
-        epilog=(
-            "Normal mode reads the MQTT payload verbatim from stdin.\n"
-            "Example:\n"
-            "  printf '%s' 'online' | python3 shared_modules/mqtt.py "
-            "--config homelab-control/configs/config.json "
-            "--topic host/status/power --qos 1 --retain\n\n"
-            "Safety: omit --retain for command/control messages. "
-            "--request-stdin is reserved for the internal bounded worker."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
-        "--config",
-        metavar="PATH",
-        help=(
-            "JSON config path for normal CLI use; reads the required top-level "
-            "mqtt object (mutually exclusive with --request-stdin)"
-        ),
-    )
-    source.add_argument("--request-stdin", action="store_true",
-                        help=(
-                            "INTERNAL ONLY: read the complete worker request as JSON from "
-                            "stdin and print a JSON [success, message] response"
-                        ))
-    parser.add_argument(
-        "--topic",
-        metavar="TOPIC",
-        help=(
-            "exact destination topic, required with --config; '+' and '#' "
-            "wildcards are rejected; payload is read verbatim from stdin"
-        ),
-    )
-    parser.add_argument(
-        "--qos",
-        type=int,
-        choices=(0, 1, 2),
-        default=1,
-        metavar="{0,1,2}",
-        help="MQTT delivery QoS for normal CLI mode (default: 1)",
-    )
-    parser.add_argument(
-        "--retain",
-        action="store_true",
-        help="retain telemetry at the broker (default: off); never use for commands",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=20,
-        metavar="SECONDS",
-        help=(
-            "positive finite total timeout for process startup, DNS, connect, "
-            "publish and required acknowledgement (default: 20 seconds)"
-        ),
-    )
+    parser = build_cli_parser()
     args = parser.parse_args()
     if args.request_stdin:
         try:
