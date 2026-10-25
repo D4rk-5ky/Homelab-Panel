@@ -1,6 +1,6 @@
 # Homelab Panel
 
-Homelab Panel monitors and controls homelab devices through a Flask webpage and MQTT. It supports Wake-on-LAN, configured remote jobs, local shutdown/reboot controls, device history, and optional automatic Home Assistant buttons.
+Homelab Panel monitors and controls homelab devices through a Flask webpage served by Waitress and MQTT. It supports Wake-on-LAN, configured remote jobs, local shutdown/reboot controls, device history, and optional automatic Home Assistant buttons. The dashboard loads once and updates changed status/job cards through small JSON requests.
 
 - `homelab-panel/`: webpage, ping/MQTT status, jobs, history, Home Assistant discovery, plus its own `configs/` and `modules/` directories.
 - `homelab-control/`: optional agent on each remote Linux host; keeps its JSON configuration in `configs/`, its reusable shell helper in `modules/`, runs explicitly allowed scripts, and publishes status/results.
@@ -20,9 +20,12 @@ The panel is intentionally split by responsibility without turning every helper 
 | `homelab-panel/modules/panel_actions.py` | Local script execution guards, Wake-on-LAN retry/cancel mechanics, shutdown/reboot confirmation, and configured remote action dispatch |
 | `homelab-panel/modules/panel_mqtt.py` | Panel-specific MQTT behavior only: topic selection, receive cache, diagnostics, HA birth handling, control/status/job dispatch, and panel event hooks; it uses the shared `MqttClient`/publisher instead of implementing Paho transport |
 | `homelab-panel/modules/panel_home_assistant.py` | Home Assistant MQTT Discovery documents, local/remote buttons, HA availability snapshots, and per-device state payloads |
+| `homelab-panel/modules/panel_cache.py` | Thread-safe in-memory JSON and merged-job caches; state-file replacements invalidate cached data |
+| `homelab-panel/modules/panel_dashboard.py` | Shared escaped status/job HTML fragments, rebuilt only when their input changes; per-browser revision deltas |
+| `homelab-panel/static/dashboard.js` | Incremental polling/actions, connection errors, job-list scroll preservation, and hidden-tab pause |
 | `shared_modules/mqtt.py` | The single generic MQTT implementation for both components: common `MqttClient` lifecycle/subscriptions/decoded callbacks/publish/stop behavior, auth/Last Will/reconnect setup, topic derivation, bounded one-shot publishing, and the standalone MQTT CLI |
 
-`app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. Generic MQTT transport is implemented once in root `shared_modules/mqtt.py` and is imported independently by both `homelab-panel` and `homelab-control`; neither component imports the other component's modules. The three extracted modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. Configuration keys, web routes, MQTT topics/payloads, Home Assistant entity IDs, safety allow-lists, and power-script behavior are unchanged by this layout.
+`app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. Generic MQTT transport is implemented once in root `shared_modules/mqtt.py` and is imported independently by both `homelab-panel` and `homelab-control`; neither component imports the other component's modules. The integration/action modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. Configuration keys, web routes, MQTT topics/payloads, Home Assistant entity IDs, safety allow-lists, and power-script behavior are unchanged by this layout.
 
 `shared_modules/` is shared infrastructure, not another service and not a place for component-specific helpers. The panel can run without Homelab Control running, and Homelab Control can run without the panel running. If you deploy only the remote agent to another machine, keep `homelab-control/` under a project root that also contains `shared_modules/` and the shared `scripts/` needed by its configured actions; you do **not** need to copy `homelab-panel/` to that machine.
 
@@ -75,10 +78,19 @@ On Debian/Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install python3 python3-flask python3-paho-mqtt wakeonlan iputils-ping
+sudo apt install python3 python3-flask python3-paho-mqtt python3-waitress wakeonlan iputils-ping
 ```
 
-`apt update` refreshes package metadata; `apt install` installs Python, Flask, the distribution Paho MQTT client, `wakeonlan`, and `ping`. The shared MQTT transport supports both the **Paho MQTT 1.x callback API** and **Paho MQTT 2.x callback API v2**. It automatically omits the v2-only constructor argument when `CallbackAPIVersion` is unavailable and accepts both callback signature shapes. `sudo` runs the package commands with administrator privileges. A reachable MQTT broker is needed for MQTT control/status and Home Assistant discovery. All application publishing and subscriptions use `paho-mqtt`; Mosquitto command-line clients are not required. A Mosquitto broker can still serve as your MQTT server. Install Paho in the Python environment used by both the panel and the agent/action scripts.
+`apt update` refreshes package metadata; `apt install` installs Python, Flask, Paho MQTT, Waitress, `wakeonlan`, and `ping`. No Apache, nginx, Redis, or Flask-Caching dependency is needed. The shared MQTT transport supports both the **Paho MQTT 1.x callback API** and **Paho MQTT 2.x callback API v2**. It automatically omits the v2-only constructor argument when `CallbackAPIVersion` is unavailable and accepts both callback signature shapes. `sudo` runs the package commands with administrator privileges. A reachable MQTT broker is needed for MQTT control/status and Home Assistant discovery. All application publishing and subscriptions use `paho-mqtt`; Mosquitto command-line clients are not required. A Mosquitto broker can still serve as your MQTT server. Install Paho in the Python environment used by both the panel and the agent/action scripts.
+
+For an isolated **panel** environment instead, install `python3-venv`, then run from the project root:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Use `.venv/bin/python` for the panel service in that case. Remote agents and the bundled shell actions use system `python3`; keep `python3-paho-mqtt` installed on agent hosts unless you explicitly configure their execution environment. Creating a panel venv does not replace those system dependencies.
 
 From the project root, create the active configs:
 
@@ -102,7 +114,7 @@ cd homelab-panel
 python3 app.py
 ```
 
-The panel listens on `http://HOST:5000/` (bind address `0.0.0.0`, port `5000`). These are fixed in the entry point, not configurable CLI options. The panel starts its MQTT listener and status monitor even when imported, so use one process for this setup.
+The panel listens on `http://HOST:5000/` (bind address `0.0.0.0`, port `5000`). The entry point starts Waitress with one process and four request threads; bind address, port, and thread count are fixed there, not app CLI options. The panel starts its MQTT listener and status monitor even when imported, so run exactly one panel process. Do not use multiple Gunicorn workers, Gunicorn `--preload`, or a development reloader with this startup lifecycle.
 
 On a remote Linux host, run each agent in its own terminal, from the project root:
 
@@ -115,7 +127,12 @@ The status indicator publishes availability, uptime, boot metadata, current comm
 
 ### Run as systemd services
 
-Edit each supplied unit's `User`, `Group`, `WorkingDirectory`, and `ExecStart` to match your host. `ExecStart` must point to the Python file in the retained full project layout. The existing example paths/usernames are deployment placeholders.
+Edit each supplied unit's `User`, `Group`, `WorkingDirectory`, and `ExecStart` to match your host. For the panel, `ExecStart` must use the Python environment containing Flask/Paho/Waitress and the full path to `homelab-panel/app.py`; `WorkingDirectory` points to `homelab-panel/`. `/usr/bin/python3` works with the apt installation above. For the optional panel venv, use its full Python path. The existing example paths/usernames are deployment placeholders. For example, for a panel venv under `/home/iamrpizw/Homelab-Panel`:
+
+```ini
+WorkingDirectory=/home/iamrpizw/Homelab-Panel/homelab-panel
+ExecStart=/home/iamrpizw/Homelab-Panel/.venv/bin/python /home/iamrpizw/Homelab-Panel/homelab-panel/app.py
+```
 
 After editing, from the project root:
 
@@ -140,6 +157,27 @@ journalctl -u homelab-controll.service -f
 
 `restart` reloads the app and its configuration. `status` shows service health. `journalctl -u UNIT` limits logs to that unit; `-f` follows new log entries. Substitute either agent service name when investigating that agent.
 
+### Upgrading an existing panel to 0.0.25
+
+1. Stop `homelab-controll.service`, replace the project source (including new `modules/`, templates, `static/dashboard.js`, and `requirements.txt`), and preserve your active `configs/` and `state/` directories.
+2. Install `python3-waitress` alongside the existing Flask/Paho system packages, or install `requirements.txt` into your panel venv. Use the same Python environment as your panel service.
+3. Point the panel unit's `ExecStart` to the Python environment containing those packages and to the current `homelab-panel/app.py`. Keep the full project layout and your actual `User`/`Group`/paths.
+4. Run `sudo systemctl daemon-reload` and `sudo systemctl restart homelab-controll.service`. Reload the dashboard once to load the new JavaScript.
+
+Existing active config files need no new keys. `PAGE_REFRESH_SECONDS` now controls partial updates instead of full reloads. Continue using one panel instance; the remote agents require no configuration or protocol changes.
+
+### Dashboard and memory caching
+
+- Initial navigation renders the page shell, username, and that browser's flash messages. Subsequent status updates fetch `GET /api/dashboard` and replace only changed status/job fragments. Navigation/login/logout still use ordinary pages.
+- Web requests never ping a device. The background monitor owns measurements; missing or expired measurements show an unknown/stale status instead of triggering work in a request or leaving the device green. MQTT broker loss and MQTT TTL expiry are reflected using current in-memory MQTT state.
+- Shared card fragments are rendered lazily on first use, kept in RAM, and rebuilt only when their device/status/job inputs change. Runtime JSON is parsed once per file version; atomic saves, external edits, deletion and malformed data are detected. Merged remote/panel jobs are decoded and sorted again only after source changes. Time-dependent job timeout views still advance on polling.
+- Each tab sends its own revision cursor. Unchanged responses contain metadata and an empty `devices` object; changed responses contain only changed fragments. A process-instance token forces a fresh snapshot after a server restart.
+- Commands submit once using `fetch`, display their result only in the initiating browser, and refresh its cards without reloading the page. Confirmation prompts remain in place. Ordinary POST/redirect/flash handling still works without JavaScript; without JavaScript, refresh status manually.
+- No username, session cookie, login response, or flash/result message is put in a shared fragment cache. Dynamic responses use `Cache-Control: private, no-store` and `Vary: Cookie`; JSON requests return `401` on session expiry and the browser returns to login.
+- Polling requests do not overlap, use a timeout, retry after connection failures, and pause while the tab is hidden. Existing displayed data is marked as unrefreshed during a connection failure. Commands are never automatically retried.
+
+Caches are process-local and reset on restart. This trades a small bounded set of shared in-memory data for less parsing, sorting, rendering, network traffic, and browser work. No RAM or CPU saving is guaranteed for your hardware without measurement.
+
 ## Panel configuration: `homelab-panel/configs/config.py`
 
 ### General settings
@@ -149,7 +187,7 @@ journalctl -u homelab-controll.service -f
 | `WOL_BROADCAST` | String, `"255.255.255.255"` | Broadcast address passed to `wakeonlan -i` |
 | `MQTT_ONLINE_TTL_SECONDS` | Integer, `90` | Maximum age of received MQTT power status for online/offline confirmation |
 | `STATUS_MONITOR_INTERVAL_SECONDS` | Integer, `10`, minimum `2` | Delay between background status-monitor passes |
-| `PAGE_REFRESH_SECONDS` | Integer, `15` | Browser auto-refresh interval |
+| `PAGE_REFRESH_SECONDS` | Integer, `15`, minimum `1` | Interval between incremental JSON updates; hidden tabs pause polling |
 | `PANEL_HISTORY_MAX_ENTRIES` | Integer, example `500`, minimum `1` | Maximum persisted panel events per device |
 | `PANEL_JOB_MAX_ENTRIES` | Integer, `100`, minimum `1` | Maximum persisted/displayed panel jobs per device |
 
@@ -356,7 +394,8 @@ The shared `shared_modules/mqtt.py` module is also the standalone publishing hel
 
 | Method / route | Purpose |
 |---|---|
-| `GET /` | Dashboard, remote statuses, jobs, and action buttons |
+| `GET /` | Dashboard shell, initial shared cards, private username/messages, and action buttons |
+| `GET /api/dashboard` | Changed shared status/job fragments as JSON; optional `since` revision plus `instance` token |
 | `GET/POST /login` | Show login / submit username and password |
 | `POST /logout` | Clear the login session |
 | `GET /history/<device_id>` | Event timeline; `?filter=all`, `errors`, or a category selects events |
@@ -366,7 +405,7 @@ The shared `shared_modules/mqtt.py` module is also the standalone publishing hel
 | `POST /mqtt/<device_id>/<button_id>` | Run a configured remote button |
 | `POST /local/<button_id>` | Run a configured panel-host button |
 
-When `WEB_AUTH_CONFIG.enabled=True`, web actions require an authenticated Flask session. MQTT access is controlled separately by broker authentication and ACLs.
+Action routes return `{ "ok": true/false, "message": "..." }` for `Accept: application/json`; ordinary forms retain redirect/flash behavior. When `WEB_AUTH_CONFIG.enabled=True`, web pages, JSON updates, and actions require an authenticated Flask session. MQTT access is controlled separately by broker authentication and ACLs.
 
 ### Panel MQTT control
 
@@ -507,13 +546,21 @@ Review scripts before allowing them, protect MQTT with authentication/ACLs, and 
 
 ## Offline checks
 
-With Python 3.10+, Flask, and a supported **paho-mqtt 1.x or 2.x** installed, from the project root:
+With Python 3.10+, Flask, Paho MQTT and Waitress installed, from the project root:
 
 ```bash
 python3 -B -m unittest discover -s tests -v
 ```
 
 `-B` disables bytecode writes; `-m unittest` runs Python's test runner; `discover` finds tests, `-s tests` selects the directory, and `-v` shows individual results. The panel tests mock broker/subprocess activity and use temporary runtime state. Publisher tests also run a small MQTT protocol peer bound only to `127.0.0.1` on a temporary port, exercising the real Paho client. They require permission for localhost sockets and do not contact your broker or run real power commands.
+
+For the optional browser check, install Playwright separately (`npm install --no-save playwright`, then `npx playwright install chromium`) and run:
+
+```bash
+node tests/dashboard_browser.cjs
+```
+
+Set `PYTHON=.venv/bin/python` if using the panel venv, or `CHROMIUM_EXECUTABLE_PATH` to use an existing Chromium install. The browser check starts a temporary Waitress fixture on localhost with mocked device actions; it never contacts your devices or broker.
 
 Read `commented_code_map.md` for implementation explanations and `VALIDATION.md` for package verification details.
 

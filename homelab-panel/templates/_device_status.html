@@ -1,0 +1,25 @@
+<div class="status-box {{ st['status_class'] }}">
+  <div class="status-title">{{ device['title'] }}</div>
+  <div class="status-main">
+    {% if st['overall']=='online' %}🟢{% elif st['overall']=='partial' %}🟡{% elif st['overall']=='unknown' %}⚪{% else %}🔴{% endif %} {{ st['overall_text'] }}
+  </div>
+  <div class="status-line">Ping: {% if st['status_stale'] %}⚪{% elif st['ping_ok'] %}🟢{% else %}🔴{% endif %} {{ st['ping_text'] }}</div>
+  <div class="status-line">MQTT: {% if st['mqtt_online_ok'] %}🟢{% elif not st['mqtt_configured'] %}⚪{% elif st['mqtt_connected'] %}🟡{% else %}🔴{% endif %} {{ st['mqtt_info'] }}</div>
+  <div class="status-line">Forventet state: {{ st['expected_state'] }}{% if st['expected_state_reason'] %} · {{ st['expected_state_reason'] }}{% endif %}</div>
+  {% if st['hostname'] %}<div class="status-line">Hostname: {{ st['hostname'] }}</div>{% endif %}
+  {% if st['uptime_seconds'] %}<div class="status-line">Uptime: {{ st['uptime_text'] }}</div>{% endif %}
+  {% if st['boot_time'] %}<div class="status-line">Boot: {{ st['boot_time'] }}</div>{% endif %}
+  <div class="status-line">Handling: {{ st['action_text'] }}</div>
+  <div class="status-line">Sidste kommando: {{ st['last_command'] }}</div>
+  <div class="status-line">Sidste resultat: {{ st['last_result'] }}</div>
+  <div class="status-line">Sidste besked: {{ st['last_message'] }}</div>
+  <div class="status-line">Sidst opdateret: {{ st['last_updated'] }}</div>
+  {% if st['ip'] %}<div class="status-line">IP: {{ st['ip'] }}</div>{% endif %}
+  {% if st['active_job_count'] %}<div class="status-line">Aktive jobs: {{ st['active_job_count'] }}</div>{% endif %}
+  <a class="history-link" href="{{ url_for('device_history', device_id=device_id) }}">🕘 Historik</a>
+  {% if st['wol_active'] %}
+    <form method="post" data-panel-action action="{{ url_for('wol_cancel', device_id=device_id) }}">
+      <button class="danger small-button" type="submit">⛔ Annullér Wake-on-LAN</button>
+    </form>
+  {% endif %}
+</div>

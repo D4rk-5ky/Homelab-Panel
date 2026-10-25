@@ -24,6 +24,19 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.25 — 2026-10-24
+
+### Waitress, in-memory shared caches and incremental dashboard updates
+
+- Replaced the `app.run()` development server with one Waitress process and four request threads; `python app.py` and the existing service entry retain their startup shape. Added `requirements.txt` and venv/service upgrade instructions.
+- Removed full-page timed refresh. Added authenticated `GET /api/dashboard`, per-tab revision cursors, a process-instance reset token, and browser updates containing only changed status/job fragments.
+- Added thread-safe, process-local caches for decoded runtime JSON, merged/sorted jobs and escaped shared card HTML. Detect state-file replacements, external edits, deletion and corruption; keep lifecycle timeout/countdown evaluation time-dependent.
+- Web requests use monitor-cached ping measurements only. Startup/expired measurements appear unknown/stale, and current MQTT connection/TTL state prevents false green online indications after broker loss.
+- Added asynchronous command submissions with confirmation prompts, per-browser result messages and ordinary form fallback. Login/username/flash content stays outside shared caches. Dynamic responses are private/no-store; expired JSON sessions receive 401.
+- Added non-overlapping polling, connection timeout/recovery, hidden-tab pause and job-scroll preservation; power commands are never retried automatically.
+- Added dashboard/session/cache/server regression coverage. Fixed the existing test loader's module-lifetime issue so module-owned callback patches work after fixture cleanup.
+- Updated README, examples, service comments, code map and validation. Version advances exactly from 0.0.24 to 0.0.25. Remote action protocols, agent code and configured power semantics are unchanged.
+
 ## 0.0.24 — 2026-09-27
 
 ### Optional job lifecycle timeout and Paho MQTT 1.x compatibility

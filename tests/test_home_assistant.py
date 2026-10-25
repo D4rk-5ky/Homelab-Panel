@@ -3,6 +3,7 @@ import contextlib
 import copy
 import importlib.util
 import io
+import importlib
 import json
 from pathlib import Path
 import sys
@@ -19,6 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_panel():
     """Load the real Flask entry point with example configs and no background I/O."""
+    # Keep production module identities available after patch.dict restores sys.modules.
+    # Several tests patch callbacks through the owning class's __module__.
+    for directory in (ROOT, ROOT / "homelab-panel"):
+        if str(directory) not in sys.path:
+            sys.path.insert(0, str(directory))
+    for name in ("modules.panel_actions", "modules.panel_mqtt", "modules.panel_home_assistant"):
+        importlib.import_module(name)
     modules = {}
     config_package = types.ModuleType("configs")
     config_package.__path__ = []

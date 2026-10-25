@@ -1,5 +1,5 @@
 [Unit]
-Description=Homelab Flask Kontrolpanel
+Description=Homelab Kontrolpanel (Flask / Waitress)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,6 +8,8 @@ Type=simple
 User=iamrpizw
 Group=iamrpizw
 WorkingDirectory=/home/darkyere/Scripts/homelab-controll
+# app.py starts one Waitress process with four request threads.
+# For a venv, replace /usr/bin/python3 with the full path to .venv/bin/python.
 ExecStart=/usr/bin/python3 /home/darkyere/Scripts/homelab-controll/app.py
 Restart=on-failure
 RestartSec=5

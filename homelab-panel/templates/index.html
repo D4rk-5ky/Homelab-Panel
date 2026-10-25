@@ -4,7 +4,6 @@
   <meta charset="utf-8">
   <title>Homelab Kontrolpanel</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="{{ page_refresh_seconds }}">
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #111827; color: #f3f4f6; }
     .wrap { max-width: 1300px; margin: 0 auto; padding: 20px; }
@@ -43,7 +42,7 @@
 <body>
 <div class="wrap">
   <h1>⚙️ Homelab Kontrolpanel</h1>
-  <p class="muted">Opdateret: {{ now }} · Auto-opdatering: {{ page_refresh_seconds }} sekunder{% if home_assistant_enabled %} · Home Assistant Discovery: aktiv{% endif %}</p>
+  <p class="muted">Opdateret: <span id="dashboard-updated-at">{{ now }}</span> · Auto-opdatering: {{ page_refresh_seconds }} sekunder{% if home_assistant_enabled %} · Home Assistant Discovery: aktiv{% endif %}</p>
 
   <div class="account-bar">
     <div class="account-actions">
@@ -57,40 +56,19 @@
     {% endif %}
   </div>
 
+  <p id="dashboard-connection" class="flash error" role="status" hidden></p>
+  <noscript><p class="flash error">Automatiske opdateringer kræver JavaScript. Genindlæs siden manuelt for ny status.</p></noscript>
+  <div id="action-messages" role="status">
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}{% for category,message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endif %}
   {% endwith %}
+  </div>
 
   <div class="card">
     <h2>📡 Remote enhedsstatus</h2>
     <div class="status-grid">
       {% for device_id, device in remote_devices.items() %}
-        {% set st = remote_statuses[device_id] %}
-        <div class="status-box {{ st['status_class'] }}">
-          <div class="status-title">{{ device['title'] }}</div>
-          <div class="status-main">
-            {% if st['overall']=='online' %}🟢{% elif st['overall']=='partial' %}🟡{% else %}🔴{% endif %} {{ st['overall_text'] }}
-          </div>
-          <div class="status-line">Ping: {% if st['ping_ok'] %}🟢{% else %}🔴{% endif %} {{ st['ping_text'] }}</div>
-          <div class="status-line">MQTT: {% if st['mqtt_online_ok'] %}🟢{% elif not st['mqtt_configured'] %}⚪{% elif st['mqtt_connected'] %}🟡{% else %}🔴{% endif %} {{ st['mqtt_info'] }}</div>
-          <div class="status-line">Forventet state: {{ st['expected_state'] }}{% if st['expected_state_reason'] %} · {{ st['expected_state_reason'] }}{% endif %}</div>
-          {% if st['hostname'] %}<div class="status-line">Hostname: {{ st['hostname'] }}</div>{% endif %}
-          {% if st['uptime_seconds'] %}<div class="status-line">Uptime: {{ st['uptime_text'] }}</div>{% endif %}
-          {% if st['boot_time'] %}<div class="status-line">Boot: {{ st['boot_time'] }}</div>{% endif %}
-          <div class="status-line">Handling: {{ st['action_text'] }}</div>
-          <div class="status-line">Sidste kommando: {{ st['last_command'] }}</div>
-          <div class="status-line">Sidste resultat: {{ st['last_result'] }}</div>
-          <div class="status-line">Sidste besked: {{ st['last_message'] }}</div>
-          <div class="status-line">Sidst opdateret: {{ st['last_updated'] }}</div>
-          {% if st['ip'] %}<div class="status-line">IP: {{ st['ip'] }}</div>{% endif %}
-          {% if st['active_jobs'] %}<div class="status-line">Aktive jobs: {{ st['active_jobs']|length }}</div>{% endif %}
-          <a class="history-link" href="{{ url_for('device_history', device_id=device_id) }}">🕘 Historik</a>
-          {% if st['wol_active'] %}
-            <form method="post" action="{{ url_for('wol_cancel', device_id=device_id) }}">
-              <button class="danger small-button" type="submit">⛔ Annullér Wake-on-LAN</button>
-            </form>
-          {% endif %}
-        </div>
+        <div data-device-status="{{ device_id }}">{{ dashboard.devices[device_id].status|safe }}</div>
       {% endfor %}
     </div>
   </div>
@@ -102,19 +80,10 @@
     <p class="muted">Jobs kan køre parallelt på samme eller forskellige hosts. Remote success/failure kommer fra Homelab Control scriptets exit code; MQTT publish alene tæller kun som afsendt.</p>
     <div class="status-grid">
       {% for device_id, device in remote_devices.items() %}
-        {% set st = remote_statuses[device_id] %}
         <div class="status-box">
           <div class="status-title">{{ device['title'] }}</div>
           <ul class="job-list" tabindex="0" aria-label="Jobstatus for {{ device['title'] }}" data-device-id="{{ device_id }}">
-            {% for job in st['jobs'] %}
-              <li class="job {{ job.get('status','') }}">
-                <div class="job-title">{{ job.get('label') or job.get('command') or job.get('job_id') }} · {% if job.get('status') == 'timed_out' %}timed out{% else %}{{ job.get('status','ukendt') }}{% endif %}</div>
-                <div>{{ job.get('message','') }}</div>
-                <div class="job-meta">{{ job.get('updated_at') or job.get('queued_at','') }}{% if job.get('runtime_seconds') is not none %} · runtime {{ job.get('runtime_seconds') }}s{% endif %}{% if job.get('timeout_remaining_seconds') is not none and job.get('status') != 'timed_out' %} · timeout om {{ job.get('timeout_remaining_seconds') }}s{% elif job.get('job_timeout_seconds') is not none %} · timeout {{ job.get('job_timeout_seconds') }}s{% endif %}{% if job.get('timed_out_at') %} · timed out {{ job.get('timed_out_at') }}{% endif %} · {{ job.get('job_id','') }}</div>
-              </li>
-            {% else %}
-              <li class="muted">Ingen jobs endnu.</li>
-            {% endfor %}
+            {{ dashboard.devices[device_id].jobs|safe }}
           </ul>
         </div>
       {% endfor %}
@@ -128,7 +97,7 @@
       {% for device_id, device in remote_devices.items() %}
         {% if device.wol and device.wol.enabled %}
           {% set confirm_text = resolve_confirmation_text(device.wol.confirm, device.title) %}
-          <form method="post" action="{{ url_for('wol', device_id=device_id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
+          <form method="post" data-panel-action action="{{ url_for('wol', device_id=device_id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
             <button class="ok" type="submit">⚡ {{ device.wol.label }}</button>
           </form>
         {% endif %}
@@ -143,7 +112,7 @@
         <div class="grid">
           {% for button in device.mqtt_controls.buttons %}
             {% set confirm_text = resolve_confirmation_text(button.confirm, device.title) %}
-            <form method="post" action="{{ url_for('mqtt_button', device_id=device_id, button_id=button.id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
+            <form method="post" data-panel-action action="{{ url_for('mqtt_button', device_id=device_id, button_id=button.id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
               <button class="{{ button.color|default('neutral') }}" type="submit">{{ button.icon|default('▶️') }} {{ button.label }}</button>
             </form>
           {% endfor %}
@@ -157,42 +126,18 @@
     <div class="grid">
       {% for button in local_server.buttons %}
         {% set confirm_text = resolve_confirmation_text(button.confirm, local_server.title) %}
-        <form method="post" action="{{ url_for('local_button', button_id=button.id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
+        <form method="post" data-panel-action action="{{ url_for('local_button', button_id=button.id) }}" {% if confirm_text %}onsubmit='return confirm({{ confirm_text|tojson }});'{% endif %}>
           <button class="{{ button.color }}" type="submit">{{ button.icon }} {{ button.label }}</button>
         </form>
       {% endfor %}
     </div>
   </div>
 </div>
-<script>
-  document.querySelectorAll('.job-list').forEach((list) => {
-    const jobs = Array.from(list.querySelectorAll('.job'));
-    const storageKey = `homelab-job-scroll:${location.pathname}:${list.dataset.deviceId}`;
-    const fitFiveJobs = () => {
-      if (jobs.length < 5) return;
-      const height = jobs[4].getBoundingClientRect().bottom - jobs[0].getBoundingClientRect().top;
-      list.style.maxHeight = `${Math.ceil(height)}px`;
-    };
-
-    fitFiveJobs();
-    // Keep each device's scroll position when the page refreshes automatically.
-    try { list.scrollTop = Number(sessionStorage.getItem(storageKey)) || 0; } catch (_) {}
-    list.addEventListener('scroll', () => {
-      try { sessionStorage.setItem(storageKey, String(list.scrollTop)); } catch (_) {}
-    }, { passive: true });
-
-    // Recalculate after text wraps differently on a narrower or wider screen.
-    if ('ResizeObserver' in window) {
-      let previousWidth;
-      new ResizeObserver(([entry]) => {
-        if (entry.contentRect.width === previousWidth) return;
-        previousWidth = entry.contentRect.width;
-        fitFiveJobs();
-      }).observe(list);
-    } else {
-      window.addEventListener('resize', fitFiveJobs);
-    }
-  });
-</script>
+<script id="dashboard-config" type="application/json">{{ {
+  "url": url_for('dashboard_updates'), "loginUrl": url_for('login'),
+  "revision": dashboard.revision, "instance": dashboard.instance,
+  "refreshMilliseconds": page_refresh_seconds * 1000
+}|tojson }}</script>
+<script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
 </body>
 </html>

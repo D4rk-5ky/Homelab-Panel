@@ -1,0 +1,9 @@
+{% for job in jobs %}
+  <li class="job {{ job.get('status','') }}" data-job-id="{{ job.get('job_id','') }}">
+    <div class="job-title">{{ job.get('label') or job.get('command') or job.get('job_id') }} · {% if job.get('status') == 'timed_out' %}timed out{% else %}{{ job.get('status','ukendt') }}{% endif %}</div>
+    <div>{{ job.get('message','') }}</div>
+    <div class="job-meta">{{ job.get('updated_at') or job.get('queued_at','') }}{% if job.get('runtime_seconds') is not none %} · runtime {{ job.get('runtime_seconds') }}s{% endif %}{% if job.get('timeout_remaining_seconds') is not none and job.get('status') != 'timed_out' %} · timeout om {{ job.get('timeout_remaining_seconds') }}s{% elif job.get('job_timeout_seconds') is not none %} · timeout {{ job.get('job_timeout_seconds') }}s{% endif %}{% if job.get('timed_out_at') %} · timed out {{ job.get('timed_out_at') }}{% endif %} · {{ job.get('job_id','') }}</div>
+  </li>
+{% else %}
+  <li class="muted">Ingen jobs endnu.</li>
+{% endfor %}

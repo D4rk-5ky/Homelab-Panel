@@ -17,7 +17,7 @@ if APP_DIR not in sys.path:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from flask import Flask, render_template, redirect, url_for, flash, request, session
+from flask import Flask, render_template, redirect, url_for, flash, request, session, jsonify
 from configs.config import (
     WOL_BROADCAST,
     MQTT_CONFIG,
@@ -41,6 +41,8 @@ PANEL_JOB_MAX_ENTRIES = max(1, int(PANEL_JOB_MAX_ENTRIES))
 from modules.panel_actions import PanelActionManager
 from modules.panel_home_assistant import HomeAssistantIntegration
 from modules.panel_mqtt import PanelMqttRuntime
+from modules.panel_cache import PanelJsonCache, PanelJobsCache
+from modules.panel_dashboard import PanelDashboardCache
 
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 PANEL_STATE_DIR = os.path.join(APP_DIR, "state")
@@ -65,6 +67,9 @@ PANEL_JOBS_LOCK = threading.Lock()
 BACKGROUND_MONITOR_STARTED = False
 BACKGROUND_MONITOR_LOCK = threading.Lock()
 REMOTE_JOB_EVENT_SEEN = set()
+JSON_FILE_CACHE = PanelJsonCache()
+JOBS_CACHE = PanelJobsCache()
+DASHBOARD_CACHE = PanelDashboardCache(render_template)
 
 
 def web_auth_enabled() -> bool:
@@ -109,9 +114,28 @@ def require_web_login():
         return None
 
     if not session_authenticated():
+        if request.path == "/api/dashboard" or request.accept_mimetypes.best == "application/json":
+            return jsonify(error="login_required", login_url=url_for("login")), 401
         return redirect(url_for("login"))
 
     return None
+
+
+@app.after_request
+def private_web_response(response):
+    """Keep authenticated pages and action results out of browser/proxy caches."""
+    if request.endpoint != "static":
+        response.headers["Cache-Control"] = "private, no-store"
+        response.vary.add("Cookie")
+    return response
+
+
+def action_response(ok: bool, message: str):
+    """Return a result to this browser only, with ordinary forms as a fallback."""
+    if request.accept_mimetypes.best == "application/json":
+        return jsonify(ok=ok, message=message)
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("index"))
 
 
 def run_command(cmd: list[str], timeout: int = 20) -> tuple[bool, str]:
@@ -136,12 +160,7 @@ def run_command(cmd: list[str], timeout: int = 20) -> tuple[bool, str]:
 
 
 def load_json_file(path: str, default):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
-        return default
-    return data
+    return JSON_FILE_CACHE.load(path, default)
 
 
 def save_json_file_atomic(path: str, data) -> None:
@@ -394,25 +413,11 @@ def apply_job_timeout(device: dict, job: dict) -> dict:
 
 
 def combined_device_jobs(device_id: str, device: dict) -> list[dict]:
-    jobs = get_panel_jobs(device_id)
     jobs_topic = str(device.get("status", {}).get("jobs_topic", "")).strip()
     payload, _ = MQTT_RUNTIME.get_payload_and_age(jobs_topic)
-    if payload:
-        try:
-            remote_jobs = json.loads(payload)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            remote_jobs = []
-        if isinstance(remote_jobs, list):
-            known = {(str(j.get("job_id")), str(j.get("updated_at"))) for j in jobs}
-            for job in remote_jobs:
-                if not isinstance(job, dict):
-                    continue
-                key = (str(job.get("job_id")), str(job.get("updated_at")))
-                if key not in known:
-                    jobs.append({**job, "origin": "Homelab Control"})
-    jobs = [apply_job_timeout(device, job) for job in jobs]
-    jobs.sort(key=lambda j: str(j.get("updated_at") or j.get("queued_at") or ""), reverse=True)
-    return jobs[:PANEL_JOB_MAX_ENTRIES]
+    jobs = JOBS_CACHE.merge(device_id, get_panel_jobs(device_id), payload, PANEL_JOB_MAX_ENTRIES)
+    # Timeout countdowns depend on time even when the underlying jobs are unchanged.
+    return [apply_job_timeout(device, job) for job in jobs]
 
 
 def ping_host(ip: str) -> bool:
@@ -472,12 +477,7 @@ def command_to_danish(payload: str | None) -> str:
 
 
 def load_panel_history_unlocked() -> dict:
-    try:
-        with open(PANEL_HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
-        return {}
-
+    data = load_json_file(PANEL_HISTORY_FILE, {})
     if not isinstance(data, dict):
         return {}
 
@@ -489,12 +489,7 @@ def load_panel_history_unlocked() -> dict:
 
 
 def save_panel_history_unlocked(history: dict) -> None:
-    os.makedirs(PANEL_STATE_DIR, exist_ok=True)
-    tmp = PANEL_HISTORY_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp, PANEL_HISTORY_FILE)
+    save_json_file_atomic(PANEL_HISTORY_FILE, history)
 
 
 def append_panel_history_event(device_id: str, record: dict) -> None:
@@ -646,11 +641,16 @@ def get_device_history(device_id: str, device: dict) -> list[dict]:
 
 
 def evaluate_remote_device_status(device_id: str, device: dict) -> dict:
+    """Active measurements belong to the monitor and power workflows only."""
+    return build_device_status(device_id, device, ping_host(device.get("wol", {}).get("ip", "")))
+
+
+def build_device_status(device_id: str, device: dict, ping_ok: bool) -> dict:
+    """Combine a measured ping with current cached MQTT/jobs; no network I/O."""
     wol_cfg = device.get("wol", {})
     status_cfg = device.get("status", {})
 
     ip = wol_cfg.get("ip", "")
-    ping_ok = ping_host(ip)
 
     power_payload, power_age = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("power_topic", ""))
     action_payload, _ = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("action_topic", ""))
@@ -782,23 +782,24 @@ def evaluate_remote_device_status(device_id: str, device: dict) -> dict:
 
 
 def build_remote_device_statuses() -> dict:
+    """Web views never probe devices, including at startup or after cache expiry."""
     result = {}
     now = time.time()
     for device_id, device in REMOTE_DEVICES.items():
         with DEVICE_STATUS_CACHE_LOCK:
             cached = DEVICE_STATUS_CACHE.get(device_id)
             cached = dict(cached) if cached else None
-        if cached and now - float(cached.get("cached_at", 0)) <= STATUS_MONITOR_INTERVAL_SECONDS * 2:
-            cached.pop("cached_at", None)
-            cached["wol_active"] = ACTION_MANAGER.wol_job_active(device_id)
-            cached["jobs"] = combined_device_jobs(device_id, device)
-            cached["active_jobs"] = [job for job in cached["jobs"] if active_job_status(str(job.get("status", "")).lower())]
-            cached["latest_job"] = cached["jobs"][0] if cached["jobs"] else {}
-            cached["expected_state"] = get_expected_state(device_id, device)
-            cached["expected_state_reason"] = str(get_device_runtime(device_id).get("expected_state_reason", ""))
-            result[device_id] = cached
-        else:
-            result[device_id] = evaluate_remote_device_status(device_id, device)
+        status = build_device_status(device_id, device, bool(cached and cached.get("ping_ok")))
+        # One pass may spend up to three seconds probing each configured device.
+        # Allow that normal scan duration before treating a stopped monitor as stale.
+        max_age = STATUS_MONITOR_INTERVAL_SECONDS * 2 + 3 * len(REMOTE_DEVICES)
+        stale = not cached or now - float(cached.get("cached_at", 0)) > max_age
+        status["status_stale"] = stale
+        if stale:
+            status.update(overall="unknown", status_class="status-partial",
+                          overall_text="Statusmåling er for gammel" if cached else "Afventer statusmonitor",
+                          ping_text="For gammel måling" if cached else "Afventer måling")
+        result[device_id] = status
     return result
 
 
@@ -1200,20 +1201,33 @@ def logout():
 
 @app.route("/")
 def index():
-    remote_statuses = build_remote_device_statuses()
+    snapshot = DASHBOARD_CACHE.snapshot(REMOTE_DEVICES, build_remote_device_statuses())
 
     return render_template(
         "index.html",
         remote_devices=REMOTE_DEVICES,
-        remote_statuses=remote_statuses,
+        dashboard=snapshot,
         local_server=LOCAL_SERVER,
-        page_refresh_seconds=PAGE_REFRESH_SECONDS,
+        page_refresh_seconds=max(1, int(PAGE_REFRESH_SECONDS)),
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         web_auth_enabled=web_auth_enabled(),
         logged_in_username=session.get("username", ""),
         home_assistant_enabled=HOME_ASSISTANT.enabled(),
         resolve_confirmation_text=resolve_confirmation_text,
     )
+
+
+@app.get("/api/dashboard")
+def dashboard_updates():
+    since = request.args.get("since", type=int)
+    if since is not None and since < 0:
+        since = None
+    snapshot = DASHBOARD_CACHE.snapshot(
+        REMOTE_DEVICES, build_remote_device_statuses(), since=since,
+        instance=request.args.get("instance"),
+    )
+    snapshot["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return jsonify(snapshot)
 
 
 @app.route("/history/<device_id>")
@@ -1250,28 +1264,24 @@ def device_history(device_id: str):
 def wol(device_id: str):
     device = REMOTE_DEVICES.get(device_id)
     if not device:
-        flash("Ukendt WoL-enhed.", "error")
-        return redirect(url_for("index"))
+        return action_response(False, "Ukendt WoL-enhed.")
 
     ok, msg = execute_and_record_remote_action(device_id, "power_on", "Webpanel")
 
     if ok:
-        flash(f"Wake-on-LAN sendt til {device['title']}: {msg}", "success")
+        message = f"Wake-on-LAN sendt til {device['title']}: {msg}"
     else:
-        flash(f"Wake-on-LAN fejlede for {device['title']}: {msg}", "error")
-
-    return redirect(url_for("index"))
+        message = f"Wake-on-LAN fejlede for {device['title']}: {msg}"
+    return action_response(ok, message)
 
 
 @app.post("/wol-cancel/<device_id>")
 def wol_cancel(device_id: str):
     device = REMOTE_DEVICES.get(device_id)
     if not device:
-        flash("Ukendt WoL-enhed.", "error")
-        return redirect(url_for("index"))
+        return action_response(False, "Ukendt WoL-enhed.")
     ok, msg = execute_and_record_remote_action(device_id, "cancel_wol", "Webpanel")
-    flash(msg, "success" if ok else "error")
-    return redirect(url_for("index"))
+    return action_response(ok, msg)
 
 
 @app.route("/mqtt-diagnostics")
@@ -1290,31 +1300,28 @@ def mqtt_diagnostics():
 def mqtt_button(device_id: str, button_id: str):
     device = REMOTE_DEVICES.get(device_id)
     if not device:
-        flash("Ukendt remote enhed.", "error")
-        return redirect(url_for("index"))
+        return action_response(False, "Ukendt remote enhed.")
 
     ok, msg = execute_and_record_remote_action(device_id, button_id, "Webpanel")
 
     if ok:
-        flash(f"MQTT-handling sendt til {device['title']}: '{button_id}'", "success")
+        message = f"MQTT-handling sendt til {device['title']}: '{button_id}'"
     else:
-        flash(f"MQTT-handling fejlede for {device['title']}: {msg}", "error")
-
-    return redirect(url_for("index"))
+        message = f"MQTT-handling fejlede for {device['title']}: {msg}"
+    return action_response(ok, message)
 
 
 @app.post("/local/<button_id>")
 def local_button(button_id: str):
     ok, msg = ACTION_MANAGER.execute_local_action(button_id)
-    flash(msg, "success" if ok else "error")
-
-    return redirect(url_for("index"))
+    return action_response(ok, msg)
 
 
 if __name__ == "__main__":
     validate_web_auth_config()
     MQTT_RUNTIME.start()
-    app.run(host="0.0.0.0", port=5000)
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=5000, threads=4)
 else:
     validate_web_auth_config()
     MQTT_RUNTIME.start()

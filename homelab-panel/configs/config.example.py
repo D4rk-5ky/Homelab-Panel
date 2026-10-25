@@ -65,7 +65,8 @@ MQTT_ONLINE_TTL_SECONDS = 90
 # WoL/power-confirmation kører i deres egne baggrundstråde.
 STATUS_MONITOR_INTERVAL_SECONDS = 10
 
-# Auto refresh i browseren.
+# Interval mellem små JSON-opdateringer af ændrede status-/jobkort (minimum 1 sekund).
+# Browseren genindlæser ikke hele siden. Skjulte faner holder pause indtil de vises igen.
 PAGE_REFRESH_SECONDS = 15
 
 # Maksimalt antal panel-oprettede event/historikposter pr. remote enhed.

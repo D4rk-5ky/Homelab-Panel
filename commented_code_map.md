@@ -10,9 +10,13 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `validate_web_auth_config()` | When login is enabled, rejects empty username/password/secret and password/secret values containing `CHANGE_ME`; catches incomplete setup before startup. It does not check password strength or every possible placeholder. |
 | `session_authenticated()` | Checks the Flask session authentication flag; keeps password data out of the session. |
 | `credentials_match()` | Compares supplied/configured username and password with constant-time comparison; reduces trivial timing leakage. |
-| `require_web_login()` | Global before-request guard that redirects every non-login/static route when authentication is required; protects current and future routes by default. |
+| `require_web_login()` | Global before-request guard protecting pages, actions and JSON updates; redirects ordinary requests and returns JSON 401 for API/fetch clients. |
+| `private_web_response()` | Adds private/no-store and Vary: Cookie to dynamic responses, including JSON and action results. |
+| `action_response()` | Returns JSON to the initiating fetch request or preserves normal form redirect/flash behavior. |
+| `build_device_status()` | Combines a supplied measured ping with current MQTT, expected state, panel action, jobs and uptime; does not probe devices. |
+| `dashboard_updates()` | Protected GET /api/dashboard returning per-browser changed fragments plus revision/instance/time metadata. |
 | `run_command()` | Runs a fixed argv command with timeout and captured output; avoids shell=True and gives callers one error format. |
-| `load_json_file()` | Loads a JSON runtime file with a safe default on missing/corrupt data; runtime state should not crash the panel. |
+| `load_json_file()` | Uses PanelJsonCache to parse one version per state file, return isolated copies, and detect changes/deletion/corruption. |
 | `save_json_file_atomic()` | Writes JSON via temporary file + replace; prevents readers seeing partially written state. |
 | `get_device_button()` | Finds a configured mqtt_controls button by ID; the same allow-list drives web, panel MQTT, jobs and HA. |
 | `resolve_confirmation_text()` | Replaces the optional `$TITLE` token with the owning device title for browser prompts; literal text remains unchanged and the template performs JSON-safe JavaScript encoding. |
@@ -48,8 +52,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `get_panel_action_state()` | Returns provisional current panel action safely. |
 | `get_remote_command_state_received_at()` | Finds newest receive time across remote current command topics; decides whether remote truth supersedes provisional panel state. |
 | `get_device_history()` | Merges remote retained history and panel event history with normalized fields; one page shows the full device journal. |
-| `evaluate_remote_device_status()` | Computes ping, MQTT, combined online, expected-state text, current command fields, uptime and jobs; green Online remains strict ping+MQTT. |
-| `build_remote_device_statuses()` | Uses recent monitor cache when possible and refreshes volatile job/WoL fields; avoids unnecessary page-load pings. |
+| `evaluate_remote_device_status()` | Actively measures ping in the monitor, then delegates to build_device_status(); web routes never call this measurement path. |
+| `build_remote_device_statuses()` | Uses monitor-cached ping only and current in-memory MQTT/jobs; no request-time network probes. Missing/expired measurements are unknown/stale. |
 | `device_mqtt_online()` | Tests current connected/fresh power=online state; confirmation workers use the same strict MQTT rule. |
 | `device_mqtt_offline()` | Tests current connected/fresh power=offline state; shutdown/reboot are not confirmed merely by publish success. |
 | `execute_and_record_remote_action()` | Creates panel job/history around dispatch and starts expected-state/power confirmation when relevant; web and panel-control MQTT share one path. |
@@ -62,13 +66,13 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `start_status_monitor()` | Starts exactly one background monitor thread per process. |
 | `login()` | GET/POST login route; creates session only after credential match. |
 | `logout()` | POST route that clears the web session. |
-| `index()` | Main dashboard route; renders cached remote status, jobs, controls and local actions. |
+| `index()` | Renders the shell with shared cached status/job fragments and private username/flash content. |
 | `device_history()` | Per-device event/history route with category/errors filtering. |
 | `wol()` | POST web route starting the shared asynchronous WoL workflow. |
 | `wol_cancel()` | POST route cancelling an active WoL retry/confirmation workflow. |
 | `mqtt_diagnostics()` | Protected diagnostics route showing broker/subscription/expected-topic state. |
 | `mqtt_button()` | POST route dispatching any configured dynamic remote button through the shared action path. |
-| `local_button()` | Protected POST route calling `execute_local_action()` and flashing its result; reuses the same local allow-list/runner as HA commands without changing session/token checks. |
+| `local_button()` | Protected POST route calling execute_local_action(); returns a per-request JSON result or ordinary redirect/flash through action_response(). |
 
 
 ## `homelab-panel/modules/panel_actions.py`
@@ -130,7 +134,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 - `GET/POST /login` → `login()` — only public application route when optional session auth is enabled.
 - `POST /logout` → `logout()` — clears authenticated session.
-- `GET /` → `index()` — main remote status/job/control dashboard.
+- `GET /` → `index()` — dashboard shell, cached cards and private session fields.
+- `GET /api/dashboard` → `dashboard_updates()` — incremental JSON with since/instance cursors; never consumes flashes.
 - `GET /history/<device_id>` → `device_history()` — merged event journal with filters.
 - `POST /wol/<device_id>` → `wol()` — starts async WoL retry/confirmation.
 - `POST /wol-cancel/<device_id>` → `wol_cancel()` — cancels active WoL job.
@@ -141,6 +146,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 ## Panel templates
 
 - `templates/index.html` — combined ping+MQTT status, expected state, current command fields, parallel job dashboard, WoL/cancel, all dynamic MQTT buttons, local controls and diagnostics link; browser confirmations resolve optional `$TITLE` and use JSON-safe JavaScript string encoding.
+- `templates/_device_status.html` — escaped shared device/status fields and optional WoL cancel form; no session or flash data.
+- `templates/_device_jobs.html` — escaped shared job list items with stable job IDs for scroll anchoring.
 - `templates/history.html` — filtered event timeline plus separate Command/Result/Message history views.
 - `templates/mqtt_diagnostics.html` — broker, subscription and per-device expected-topic diagnostics.
 - `templates/login.html` — minimal username/password session login page.
@@ -282,21 +289,37 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 - Navigation/history filters/login/logout do not represent device actions and have no HA button entities.
 - Discovery creates entities, not custom dashboard cards. Python configuration is loaded at startup; adding/editing buttons requires a panel restart. Removing a config entry prevents its execution but does not automatically delete a retained discovery document.
 
-## Browser functions and callbacks in `templates/index.html`
+## Shared in-memory caches
+
+| Class / method | What / why |
+|---|---|
+| `PanelJsonCache.__init__()` | Creates one lock and file-version dictionary for the fixed runtime files. |
+| `PanelJsonCache.load()` | Checks inode/mtime/ctime/size, parses changed JSON, and returns deep copies; missing/corrupt files evict old data. |
+| `PanelJobsCache.__init__()` | Creates one lock and current source/result entry per configured device. |
+| `PanelJobsCache.merge()` | Merges/de-duplicates/sorts panel and remote job sources only when content changes; returns isolated copies before time-dependent timeout evaluation. |
+| `PanelDashboardCache.__init__()` | Creates process-instance ID, monotonic revision counter, lock and current card entries. |
+| `PanelDashboardCache.snapshot()` | Rebuilds changed escaped fragments, then returns full initial/reset cards or only cards newer than a browser's cursor. Shared cache excludes usernames, flashes and session data. |
+
+## Browser functions and callbacks in `static/dashboard.js`
 
 | Function / callback | What / why |
 |---|---|
-| `fitFiveJobs()` | Measures the first five job cards and caps the list's height so older jobs remain reachable by scrolling. |
-| `.job-list` `forEach` callback | Initializes each device's list independently and restores its saved scroll offset after page refresh. |
-| `scroll` event callback | Saves that device list's scroll offset to session storage; errors are ignored when storage is unavailable. |
-| `ResizeObserver` callback | Recalculates the five-job height only when width changes, avoiding repeated work from height-only updates. The window resize listener supplies a fallback. |
-| Form `confirm(...)` handlers | Ask for the configured browser confirmation before a web action is submitted; they do not execute on HA MQTT presses. |
+| `fitFiveJobs()` | Measures current first-five-job height after updates and width changes. |
+| `updateJobs()` | Replaces only job items while preserving the list element, focus and scroll anchor. |
+| `updateStatus()` | Replaces only one changed status card; preserves focused action and pending button state. |
+| `loginRequired()` | Returns to login when the API or action response reports session expiry (401). |
+| `poll()` | Sends since/instance cursor, applies changed cards, handles timeout/retry, prevents overlap, and marks disconnected data. |
+| `showMessage()` | Displays a result only in the initiating browser using textContent. |
+| Submit callback | Respects cancelled inline confirmation, disables pending actions, POSTs once, shows private result and polls; never retries a command. |
+| Visibility callback | Pauses hidden-tab polling and refreshes immediately when visible again. |
+| ResizeObserver / resize callback | Recalculates job-list height on width changes. |
+| Form `confirm(...)` handlers | Preserve configured confirmation before web actions; not used by HA MQTT presses. |
 
 ## External commands and embedded Python
 
 | Command / block | What / why |
 |---|---|
-| `python3 app.py` | Starts Flask plus the panel MQTT/status background workers; there are no app CLI flags. |
+| `python3 app.py` | Starts one Waitress process with four request threads plus panel MQTT/status workers; no app CLI flags. |
 | `python3 homelab_control_command_listener.py` | Loads the agent allow-list and runs the MQTT command listener. |
 | `python3 homelab_control_status_indicator.py` | Starts Linux availability/boot/uptime/current-status publication; Linux `/proc` supplies uptime and boot identity. |
 | `python3 shared_modules/mqtt.py --config PATH --topic TOPIC --qos 1 --retain` | Publishes the stdin payload as retained telemetry through Paho. The same CLI without `--retain` can send commands. The JSON config supplies credentials without placing them in argv. |
@@ -430,3 +453,24 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 - `VERSION` contains the current three-part version.
 - `VERSIONING.md` records the version policy and each release's actual changes.
 - `VALIDATION.md` records checks, environment limits, and the original/final file comparison for this package.
+
+## Dashboard regression checks
+
+`tests/test_dashboard.py` uses `load_panel()` with isolated temporary state, a fixed clock and a ping guard.
+
+| Function | What / why |
+|---|---|
+| `DashboardTests.setUp()` | Loads isolated app/state, holds time constant and fails any request-time ping. |
+| `DashboardTests.poll()` | Requests JSON with the optional prior revision/instance for a selected session. |
+| `DashboardTests.seed_ping()` | Supplies monitor measurements without network I/O. |
+| `test_startup_and_expired_cache_never_ping_and_show_unknown()` | Checks absent/stale cache behavior and no full-page refresh. |
+| `test_unchanged_requests_reuse_fragments_and_send_no_cards()` | Checks zero template rendering and compact unchanged responses. |
+| `test_only_changed_device_fragment_is_returned_and_restart_resets()` | Checks per-card/per-tab deltas and process reset behavior. |
+| `test_broker_loss_and_mqtt_expiry_cannot_leave_green_online()` | Checks connection/TTL changes use current MQTT state. |
+| `test_job_sources_invalidate_and_timeouts_progress_without_new_mqtt()` | Checks persisted/remote changes and time-dependent expiry. |
+| `test_state_cache_reuses_decoded_data_and_notices_replace_delete_corruption()` | Checks no redundant parsing and runtime-file invalidation. |
+| `test_login_and_action_results_remain_private_and_json_requires_auth()` | Checks two-session isolation, retained private flashes and blocked expired commands. |
+| `test_shared_html_escapes_device_and_job_payloads()` | Checks unsafe device/job text is escaped inside shared fragments. |
+| `test_script_entry_uses_waitress_once_instead_of_development_server()` | Checks direct startup uses Waitress and never Flask.run(). |
+
+`tests/dashboard_browser.cjs` runs an optional real Chromium/Waitress check. Its localhost-only Python fixture uses `fake_action()`, `add_jobs()`, `change_job()` and `restart_cache()` exclusively inside the test process; these endpoints do not exist in the production application. The test covers login, incremental updates, no navigation on commands, confirmation cancellation, XSS escaping, job focus/scroll, private results, network recovery, hidden-tab pause, process-cache reset, mobile width and session expiry. All external device/MQTT work is mocked.
