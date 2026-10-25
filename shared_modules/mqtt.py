@@ -10,6 +10,12 @@ import subprocess
 import sys
 import time
 
+# Direct-file invocation must find the same shared CLI helper as imports do.
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from shared_modules.cli import add_version_argument
+
 import paho.mqtt.client as mqtt
 
 
@@ -252,6 +258,7 @@ def cli_main() -> int:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    add_version_argument(parser)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(
         "--config",

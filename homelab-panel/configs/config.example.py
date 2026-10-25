@@ -9,6 +9,8 @@ WOL_BROADCAST = "255.255.255.255"
 MQTT_CONFIG = {
     "host": "YOUR.IP.Or.HostName",
     "port": 1883,
+    # Keepalive for panelets langvarige MQTT-forbindelse; one-shot bruger 60.
+    "keepalive": 60,
     "user": "",
     "pass": "",
     # Paho-publisherens QoS for remote kommandoer: 0, 1 eller 2.
@@ -17,6 +19,9 @@ MQTT_CONFIG = {
     "retain": False,
     "client_id_panel_status": "homelab-panel-status",
     "panel_control_topic": "homelab-panel/control",
+    # Debug only: log full incoming telemetry payloads (including jobs/history).
+    # Errors, connections and action results remain logged when False.
+    "log_payloads": False,
 }
 
 # ============================================================
@@ -74,3 +79,7 @@ PANEL_HISTORY_MAX_ENTRIES = 500
 
 # Maksimalt antal panel-jobs der bevares pr. enhed i runtime state/historik.
 PANEL_JOB_MAX_ENTRIES = 100
+
+# Initial jobs per device and each older-job loading step; does not trim storage.
+# Optional in existing configs; default 5, minimum 1, capped by PANEL_JOB_MAX_ENTRIES.
+DASHBOARD_JOB_PAGE_SIZE = 5

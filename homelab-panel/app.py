@@ -17,6 +17,11 @@ if APP_DIR not in sys.path:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# Parse inspection options before importing runtime dependencies or private configs.
+if __name__ == "__main__":
+    from shared_modules.cli import parse_service_cli
+    parse_service_cli('Run Homelab Panel: one Waitress process on 0.0.0.0:5000 with four threads. Configure homelab-panel/configs/config.py and devices.py before starting.')
+
 from flask import Flask, render_template, redirect, url_for, flash, request, session, jsonify
 from configs.config import (
     WOL_BROADCAST,
@@ -30,10 +35,13 @@ from configs.config import (
     PANEL_JOB_MAX_ENTRIES,
 )
 from configs.devices import REMOTE_DEVICES, LOCAL_SERVER
+from configs import config as panel_config
 
 PANEL_HISTORY_MAX_ENTRIES = max(1, int(PANEL_HISTORY_MAX_ENTRIES))
 STATUS_MONITOR_INTERVAL_SECONDS = max(2, int(STATUS_MONITOR_INTERVAL_SECONDS))
 PANEL_JOB_MAX_ENTRIES = max(1, int(PANEL_JOB_MAX_ENTRIES))
+DASHBOARD_JOB_PAGE_SIZE = max(1, min(PANEL_JOB_MAX_ENTRIES,
+    int(getattr(panel_config, "DASHBOARD_JOB_PAGE_SIZE", 5))))
 
 # Keep the Flask entry point focused on web/state orchestration. Project-specific
 # implementations live under homelab-panel/modules while this entry point remains
@@ -69,7 +77,7 @@ BACKGROUND_MONITOR_LOCK = threading.Lock()
 REMOTE_JOB_EVENT_SEEN = set()
 JSON_FILE_CACHE = PanelJsonCache()
 JOBS_CACHE = PanelJobsCache()
-DASHBOARD_CACHE = PanelDashboardCache(render_template)
+DASHBOARD_CACHE = PanelDashboardCache(render_template, DASHBOARD_JOB_PAGE_SIZE)
 
 
 def web_auth_enabled() -> bool:
@@ -114,7 +122,7 @@ def require_web_login():
         return None
 
     if not session_authenticated():
-        if request.path == "/api/dashboard" or request.accept_mimetypes.best == "application/json":
+        if request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json":
             return jsonify(error="login_required", login_url=url_for("login")), 401
         return redirect(url_for("login"))
 
@@ -270,8 +278,8 @@ def update_device_runtime(device_id: str, **updates) -> dict:
         return dict(current)
 
 
-def get_expected_state(device_id: str, device: dict) -> str:
-    runtime = get_device_runtime(device_id)
+def get_expected_state(device_id: str, device: dict, *, runtime=None) -> str:
+    runtime = get_device_runtime(device_id) if runtime is None else runtime
     return str(runtime.get("expected_state") or device.get("expected_state_default") or "unknown")
 
 
@@ -370,7 +378,7 @@ def active_job_status(status: str) -> bool:
     return status in {"queued", "running", "waiting", "confirming"}
 
 
-def apply_job_timeout(device: dict, job: dict) -> dict:
+def apply_job_timeout(device: dict, job: dict, *, now=None) -> dict:
     """Return one display/state view with expired active jobs marked timed_out."""
     result = dict(job)
     status = str(result.get("status", "")).strip().lower()
@@ -395,8 +403,9 @@ def apply_job_timeout(device: dict, job: dict) -> dict:
     except (TypeError, ValueError, OverflowError):
         return result
 
-    elapsed = max(0.0, time.time() - started_epoch)
+    elapsed = max(0.0, (time.time() if now is None else now) - started_epoch)
     result["job_timeout_seconds"] = timeout
+    result["timeout_deadline"] = started_epoch + timeout
     result["timeout_remaining_seconds"] = max(0, int(math.ceil(timeout - elapsed)))
     if elapsed < timeout:
         return result
@@ -412,12 +421,12 @@ def apply_job_timeout(device: dict, job: dict) -> dict:
     return result
 
 
-def combined_device_jobs(device_id: str, device: dict) -> list[dict]:
+def combined_device_jobs(device_id: str, device: dict, *, panel_jobs=None, mqtt_states=None, now=None) -> list[dict]:
     jobs_topic = str(device.get("status", {}).get("jobs_topic", "")).strip()
-    payload, _ = MQTT_RUNTIME.get_payload_and_age(jobs_topic)
-    jobs = JOBS_CACHE.merge(device_id, get_panel_jobs(device_id), payload, PANEL_JOB_MAX_ENTRIES)
-    # Timeout countdowns depend on time even when the underlying jobs are unchanged.
-    return [apply_job_timeout(device, job) for job in jobs]
+    payload, _ = MQTT_RUNTIME.get_payload_and_age(jobs_topic, states=mqtt_states, now=now)
+    local_jobs = get_panel_jobs(device_id) if panel_jobs is None else panel_jobs.get(device_id, [])
+    jobs = JOBS_CACHE.merge(device_id, local_jobs, payload, PANEL_JOB_MAX_ENTRIES)
+    return [apply_job_timeout(device, job, now=now) for job in jobs]
 
 
 def ping_host(ip: str) -> bool:
@@ -574,7 +583,7 @@ def get_panel_action_state(device_id: str) -> dict | None:
         return dict(state) if state else None
 
 
-def get_remote_command_state_received_at(status_cfg: dict) -> float:
+def get_remote_command_state_received_at(status_cfg: dict, *, mqtt_states=None) -> float:
     received_at = 0.0
     for key in (
         "last_command_topic",
@@ -583,7 +592,7 @@ def get_remote_command_state_received_at(status_cfg: dict) -> float:
         "last_updated_topic",
     ):
         topic = status_cfg.get(key, "").strip()
-        state = MQTT_RUNTIME.get_state(topic)
+        state = MQTT_RUNTIME.get_state(topic) if mqtt_states is None else mqtt_states.get(topic)
         if state:
             received_at = max(received_at, float(state.get("timestamp", 0.0)))
     return received_at
@@ -645,26 +654,33 @@ def evaluate_remote_device_status(device_id: str, device: dict) -> dict:
     return build_device_status(device_id, device, ping_host(device.get("wol", {}).get("ip", "")))
 
 
-def build_device_status(device_id: str, device: dict, ping_ok: bool) -> dict:
+def build_device_status(device_id: str, device: dict, ping_ok: bool, *, inputs=None) -> dict:
     """Combine a measured ping with current cached MQTT/jobs; no network I/O."""
     wol_cfg = device.get("wol", {})
     status_cfg = device.get("status", {})
 
     ip = wol_cfg.get("ip", "")
+    states = inputs["mqtt"] if inputs is not None else None
+    now = inputs["now"] if inputs is not None else None
+    runtime = inputs["runtime"].get(device_id, {}) if inputs is not None else get_device_runtime(device_id)
+    runtime = runtime if isinstance(runtime, dict) else {}
 
-    power_payload, power_age = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("power_topic", ""))
-    action_payload, _ = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("action_topic", ""))
-    last_command_payload, _ = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("last_command_topic", ""))
-    last_result_payload, _ = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("last_result_topic", ""))
-    last_message_payload, _ = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("last_message_topic", ""))
-    last_updated_payload, _ = MQTT_RUNTIME.get_payload_and_age(status_cfg.get("last_updated_topic", ""))
-    hostname_payload, _ = MQTT_RUNTIME.get_payload_and_age(str(status_cfg.get("hostname_topic", "")).strip())
-    uptime_payload, _ = MQTT_RUNTIME.get_payload_and_age(str(status_cfg.get("uptime_topic", "")).strip())
-    boot_time_payload, _ = MQTT_RUNTIME.get_payload_and_age(str(status_cfg.get("boot_time_topic", "")).strip())
+    def payload_and_age(topic):
+        return MQTT_RUNTIME.get_payload_and_age(topic, states=states, now=now)
+
+    power_payload, power_age = payload_and_age(status_cfg.get("power_topic", ""))
+    action_payload, _ = payload_and_age(status_cfg.get("action_topic", ""))
+    last_command_payload, _ = payload_and_age(status_cfg.get("last_command_topic", ""))
+    last_result_payload, _ = payload_and_age(status_cfg.get("last_result_topic", ""))
+    last_message_payload, _ = payload_and_age(status_cfg.get("last_message_topic", ""))
+    last_updated_payload, _ = payload_and_age(status_cfg.get("last_updated_topic", ""))
+    hostname_payload, _ = payload_and_age(str(status_cfg.get("hostname_topic", "")).strip())
+    uptime_payload, _ = payload_and_age(str(status_cfg.get("uptime_topic", "")).strip())
+    boot_time_payload, _ = payload_and_age(str(status_cfg.get("boot_time_topic", "")).strip())
 
     power_topic = str(status_cfg.get("power_topic", "")).strip()
     mqtt_configured = bool(power_topic)
-    mqtt_connected = MQTT_RUNTIME.connected
+    mqtt_connected = inputs["connected"] if inputs is not None else MQTT_RUNTIME.connected
     mqtt_power_payload = power_payload.lower() if power_payload else None
     mqtt_power_fresh = power_age is not None and power_age <= MQTT_ONLINE_TTL_SECONDS
 
@@ -681,7 +697,7 @@ def build_device_status(device_id: str, device: dict, ping_ok: bool) -> dict:
     # Ping and MQTT are intentionally evaluated independently. This lets the UI
     # show that ICMP works before MQTT is configured/connected, while the strict
     # combined Online state still requires both signals at the same time.
-    expected_state = get_expected_state(device_id, device)
+    expected_state = get_expected_state(device_id, device, runtime=runtime)
     if ping_ok and mqtt_online_ok:
         overall = "online"
         overall_text = "Online"
@@ -713,21 +729,17 @@ def build_device_status(device_id: str, device: dict, ping_ok: bool) -> dict:
     elif not mqtt_connected:
         if mqtt_power_payload is None:
             mqtt_info = "Ikke tilsluttet MQTT-broker"
-        elif power_age is not None:
-            mqtt_info = f"Ikke tilsluttet broker · sidst: {mqtt_power_payload} ({power_age}s siden)"
         else:
             mqtt_info = f"Ikke tilsluttet broker · sidst: {mqtt_power_payload}"
     elif mqtt_power_payload is None:
         mqtt_info = "Broker tilsluttet · ingen enhedsstatus"
     elif not mqtt_power_fresh:
-        mqtt_info = f"{mqtt_power_payload} · for gammel ({power_age}s siden)"
-    elif power_age is not None:
-        mqtt_info = f"{mqtt_power_payload} ({power_age}s siden)"
+        mqtt_info = f"{mqtt_power_payload} · for gammel"
     else:
         mqtt_info = mqtt_power_payload
 
-    panel_action = get_panel_action_state(device_id)
-    remote_command_received_at = get_remote_command_state_received_at(status_cfg)
+    panel_action = inputs["actions"].get(device_id) if inputs is not None else get_panel_action_state(device_id)
+    remote_command_received_at = get_remote_command_state_received_at(status_cfg, mqtt_states=states)
     use_panel_action = bool(
         panel_action
         and float(panel_action.get("recorded_at", 0.0)) > remote_command_received_at
@@ -748,11 +760,14 @@ def build_device_status(device_id: str, device: dict, ping_ok: bool) -> dict:
         uptime_seconds = int(str(uptime_payload or "0"))
     except ValueError:
         uptime_seconds = 0
-    jobs = combined_device_jobs(device_id, device)
+    jobs = combined_device_jobs(device_id, device,
+        panel_jobs=inputs["jobs"] if inputs is not None else None, mqtt_states=states, now=now)
     active_jobs = [job for job in jobs if active_job_status(str(job.get("status", "")).lower())]
     latest_job = jobs[0] if jobs else {}
 
+    power_state = MQTT_RUNTIME.get_state(power_topic) if states is None else states.get(power_topic)
     return {
+        "mqtt_received_at": power_state.get("timestamp") if power_state else None,
         "overall": overall,
         "overall_text": overall_text,
         "status_class": status_class,
@@ -773,34 +788,68 @@ def build_device_status(device_id: str, device: dict, ping_ok: bool) -> dict:
         "uptime_text": format_duration(uptime_seconds) if uptime_seconds >= 0 else "Ukendt",
         "boot_time": boot_time_payload or "",
         "expected_state": expected_state,
-        "expected_state_reason": str(get_device_runtime(device_id).get("expected_state_reason", "")),
+        "expected_state_reason": str(runtime.get("expected_state_reason", "")),
         "jobs": jobs,
         "active_jobs": active_jobs,
         "latest_job": latest_job,
-        "wol_active": ACTION_MANAGER.wol_job_active(device_id),
+        "wol_active": inputs["wol"].get(device_id, False) if inputs is not None else ACTION_MANAGER.wol_job_active(device_id),
     }
 
 
 def build_remote_device_statuses() -> dict:
-    """Web views never probe devices, including at startup or after cache expiry."""
-    result = {}
-    now = time.time()
-    for device_id, device in REMOTE_DEVICES.items():
-        with DEVICE_STATUS_CACHE_LOCK:
-            cached = DEVICE_STATUS_CACHE.get(device_id)
-            cached = dict(cached) if cached else None
-        status = build_device_status(device_id, device, bool(cached and cached.get("ping_ok")))
-        # One pass may spend up to three seconds probing each configured device.
-        # Allow that normal scan duration before treating a stopped monitor as stale.
+    """Reuse one prepared view until inputs change or a server-side deadline arrives."""
+    with DEVICE_STATUS_CACHE_LOCK:
+        measurements = {key: {"ping_ok": bool(value.get("ping_ok")),
+                              "cached_at": value.get("cached_at", 0)}
+                        for key, value in DEVICE_STATUS_CACHE.items()}
+    with PANEL_ACTION_STATE_LOCK:
+        actions = {key: dict(value) for key, value in PANEL_ACTION_STATE.items()}
+    wol_states = {key: ACTION_MANAGER.wol_job_active(key) for key in REMOTE_DEVICES}
+    key = (REMOTE_DEVICES, measurements, actions, wol_states, MQTT_RUNTIME.revision,
+           MQTT_RUNTIME.connected, MQTT_ONLINE_TTL_SECONDS, STATUS_MONITOR_INTERVAL_SECONDS,
+           PANEL_JOB_MAX_ENTRIES, PANEL_RUNTIME_FILE, JSON_FILE_CACHE.version(PANEL_RUNTIME_FILE),
+           PANEL_JOBS_FILE, JSON_FILE_CACHE.version(PANEL_JOBS_FILE))
+
+    def build(now):
+        # Load each shared state source once, not once per field/device/browser.
+        with DEVICE_RUNTIME_LOCK:
+            runtime = load_runtime_state_unlocked()
+        with PANEL_JOBS_LOCK:
+            jobs = load_panel_jobs_unlocked()
+        states = MQTT_RUNTIME.snapshot()
+        inputs = {"runtime": runtime, "jobs": jobs, "mqtt": states, "actions": actions, "wol": wol_states,
+                  "connected": MQTT_RUNTIME.connected, "now": now}
+        statuses = {}
+        deadlines = []
+        # Allow two monitor intervals and a full sequential pass of bounded pings.
         max_age = STATUS_MONITOR_INTERVAL_SECONDS * 2 + 3 * len(REMOTE_DEVICES)
-        stale = not cached or now - float(cached.get("cached_at", 0)) > max_age
-        status["status_stale"] = stale
-        if stale:
-            status.update(overall="unknown", status_class="status-partial",
-                          overall_text="Statusmåling er for gammel" if cached else "Afventer statusmonitor",
-                          ping_text="For gammel måling" if cached else "Afventer måling")
-        result[device_id] = status
-    return result
+        for device_id, device in REMOTE_DEVICES.items():
+            measured = measurements.get(device_id)
+            status = build_device_status(device_id, device, bool(measured and measured["ping_ok"]), inputs=inputs)
+            monitor_deadline = float(measured["cached_at"]) + max_age if measured else now
+            stale = not measured or now >= monitor_deadline
+            status["status_stale"] = stale
+            if stale:
+                status.update(overall="unknown", status_class="status-partial",
+                              overall_text="Statusmåling er for gammel" if measured else "Afventer statusmonitor",
+                              ping_text="For gammel måling" if measured else "Afventer måling")
+            else:
+                deadlines.append(monitor_deadline)
+            topic = str(device.get("status", {}).get("power_topic", "")).strip()
+            if topic in states:
+                # get_payload_and_age uses integer seconds; <= TTL remains fresh.
+                mqtt_deadline = float(states[topic]["timestamp"]) + MQTT_ONLINE_TTL_SECONDS + 1
+                if mqtt_deadline > now:
+                    deadlines.append(mqtt_deadline)
+            for job in status["jobs"]:
+                if active_job_status(str(job.get("status", "")).lower()) and job.get("timeout_deadline", 0) > now:
+                    deadlines.append(job["timeout_deadline"])
+                # Countdown display is browser-side; seconds must not churn shared HTML.
+                job.pop("timeout_remaining_seconds", None)
+            statuses[device_id] = status
+        return statuses, min(deadlines, default=float("inf"))
+
+    return DASHBOARD_CACHE.prepare(key, build)
 
 
 
@@ -1201,7 +1250,8 @@ def logout():
 
 @app.route("/")
 def index():
-    snapshot = DASHBOARD_CACHE.snapshot(REMOTE_DEVICES, build_remote_device_statuses())
+    limits = {key: PANEL_JOB_MAX_ENTRIES for key in REMOTE_DEVICES} if request.args.get("jobs") == "all" else None
+    snapshot = DASHBOARD_CACHE.snapshot(REMOTE_DEVICES, build_remote_device_statuses(), job_limits=limits)
 
     return render_template(
         "index.html",
@@ -1209,6 +1259,8 @@ def index():
         dashboard=snapshot,
         local_server=LOCAL_SERVER,
         page_refresh_seconds=max(1, int(PAGE_REFRESH_SECONDS)),
+        server_epoch=time.time(),
+        job_page_size=DASHBOARD_JOB_PAGE_SIZE,
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         web_auth_enabled=web_auth_enabled(),
         logged_in_username=session.get("username", ""),
@@ -1217,17 +1269,43 @@ def index():
     )
 
 
+def dashboard_response(snapshot):
+    """Attach current server time outside shared fragments for browser clocks."""
+    snapshot["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    snapshot["server_epoch"] = time.time()
+    return jsonify(snapshot)
+
+
 @app.get("/api/dashboard")
 def dashboard_updates():
     since = request.args.get("since", type=int)
     if since is not None and since < 0:
         since = None
-    snapshot = DASHBOARD_CACHE.snapshot(
+    try:
+        limits = json.loads(request.args.get("jobs", "{}"))
+        if (not isinstance(limits, dict) or any(
+                key not in REMOTE_DEVICES or type(value) is not int or not 1 <= value <= PANEL_JOB_MAX_ENTRIES
+                for key, value in limits.items())):
+            raise ValueError("Invalid job windows")
+    except (ValueError, TypeError):
+        return jsonify(error="invalid_job_windows"), 400
+    return dashboard_response(DASHBOARD_CACHE.snapshot(
         REMOTE_DEVICES, build_remote_device_statuses(), since=since,
-        instance=request.args.get("instance"),
-    )
-    snapshot["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return jsonify(snapshot)
+        instance=request.args.get("instance"), job_limits=limits,
+    ))
+
+
+@app.get("/api/jobs/<device_id>")
+def older_device_jobs(device_id: str):
+    """Expand a bounded current job prefix; stored history is never truncated here."""
+    if device_id not in REMOTE_DEVICES:
+        return jsonify(error="unknown_device"), 404
+    limit = request.args.get("limit", type=int)
+    if limit is None or not 1 <= limit <= PANEL_JOB_MAX_ENTRIES:
+        return jsonify(error="invalid_job_limit"), 400
+    return dashboard_response(DASHBOARD_CACHE.job_window(
+        REMOTE_DEVICES, build_remote_device_statuses(), device_id, limit,
+    ))
 
 
 @app.route("/history/<device_id>")

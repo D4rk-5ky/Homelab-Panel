@@ -24,6 +24,33 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.27 — 2026-10-25
+
+### Shared prepared dashboard and demand-loaded jobs for low-power hosts
+
+- Advance exactly 0.0.26 → 0.0.27. Preserve all existing project files, permission metadata, complete prior version history, CLI flags and both disclaimer bodies.
+- Extend the existing PanelDashboardCache with one locked prepared snapshot. Invalidate on MQTT receive revision/connectivity, measurements, provisional action/WoL state, current device/config limits and runtime/job file identities; also invalidate on server MQTT/monitor/job deadlines or a backwards wall-clock step. No periodic rebuild thread or new service/dependency is added.
+- Add PanelJsonCache.version() for source-identity checks without loading/copying contents. A prepared rebuild loads runtime once, jobs once and MQTT receive metadata once for all devices; unchanged requests reuse prepared state without repeated status construction, job timeout evaluation, source copying or rendering. Adapt existing status/job/receive-time helpers to accept optional batch inputs and preserve direct monitor/HA callers.
+- Emit stable MQTT receive timestamps and active-job timeout_deadline values. Browser labels tick locally from server epoch plus monotonic elapsed time; remove elapsed-second values from prepared fragment sources. The server still enforces integer-second MQTT freshness, stopped-monitor detection and all active job deadlines, including unloaded rows. Browser countdown expiry never marks success, cancels or extends work.
+- Render only the newest optional DASHBOARD_JOB_PAGE_SIZE jobs initially (default 5, minimum 1, capped by PANEL_JOB_MAX_ENTRIES). Add authenticated read-only /api/jobs/<device_id>?limit=N and validated per-device job-window counts on /api/dashboard. Store one lazy HTML row cache per current device/source, bounded by retained jobs, rather than per-browser window caches. Keep full existing retention/history; offer /?jobs=all for no-JavaScript access.
+- Extend the existing browser poll queue to serialize global reads and older-job reads, preserve the global cursor after partial device responses, retain expanded prefixes across new data, and support button/wheel/scroll/keyboard loading, retries, restart reset, focus/scroll anchoring and hidden-tab pause. Add a scroll-for-more sentinel for an exactly fitting first batch. Add a [hidden] CSS rule so the original generic button display style cannot expose hidden loader controls.
+- Add optional MQTT_CONFIG.log_payloads=False to suppress full incoming telemetry printing by default. Keep state/routing, error/rejection, connection and action-result logs. Root-agent services, shared power scripts, action manager, HA integration and generic MQTT transport stay unchanged.
+- Extend Python regressions for batched/reused state, all source invalidations, exact deadlines/clock rewind, pagination/row cache bounds, no-JavaScript access, auth/input/escaping, logging modes and concurrent preparation. Update old CLI tests to read VERSION instead of hard-coding a release. Adapt dashboard metadata/countdown assertions and expand the real Waitress/Chromium fixture for lazy jobs, local timers, timeout, scroll/key loads, retry and serialized requests.
+- Update current-use README, all affected config examples, complete function/command map and validation. The device and remote-agent config examples need no new keys. Full source ZIP preserves all 42 original-upload paths and all 44 paths of 0.0.26; no original file is removed or renamed.
+
+## 0.0.26 — 2026-10-25
+
+### Safe CLI inspection and current-use documentation
+
+- Increment `VERSION` exactly from 0.0.25 to 0.0.26; retain the 0.0.99 → 0.1.0 rollover policy and the complete original history in canonical `VERSIONING.md`.
+- Add shared `shared_modules/cli.py`: `add_version_argument()` reads root `VERSION`, and `parse_service_cli()` provides help/version and rejects unsupported service arguments. The panel and both agents call it on direct execution before private configuration and runtime dependency imports. No-argument startup and panel import startup keep their existing behavior.
+- Add `--version` to the existing MQTT publisher parser and direct-file project-root lookup for the shared helper. Existing publishing flags, required normal inputs, worker protocol, transport/timeouts, credential handling, QoS/retention and no-retry semantics stay intact. MQTT help/version still needs installed Paho.
+- Add shared `power_script_cli()` and move optional root-agent setup into `load_control_status()`. All four power scripts parse help/version and reject unsupported/extra arguments before calling setup. No-argument execution retains original shutdown/reboot/cancel argv, root/sudo selection, remote status integration and success/failure handling. No dry-run or configurable-delay option is added.
+- Add `tests/test_cli.py` covering safe service inspection without site packages, publisher version without publishing inputs, shell inspection/setup traps, and stubbed root/sudo success/failure argv. Update the existing runpy Waitress startup fixture to supply actual service argv instead of unittest runner arguments.
+- Add the already-supported panel `MQTT_CONFIG.keepalive` option to its config example and README (default 60); no runtime option or dependency is introduced. Device/agent examples remain complete and byte-identical.
+- Update README to current-use help/version/exit-code behavior, explicit remote `target` envelopes, current-page scroll anchoring, required HA birth keys, complete-install `VERSION` requirements, and generic replacement instructions. Preserve both supplied disclaimer bodies and project-local links; keep historical changes here only.
+- Expand `commented_code_map.md` for every new function, entry-point block, script command and test. Refresh `VALIDATION.md` with actual checks/limits. Preserve all 42 original file paths and original permission metadata; add only the shared CLI helper and CLI regression file. Package a clean full-project ZIP and externally record original/release hashes, additions and file preservation.
+
 ## 0.0.25 — 2026-10-24
 
 ### Waitress, in-memory shared caches and incremental dashboard updates

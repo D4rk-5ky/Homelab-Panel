@@ -4,7 +4,7 @@
     {% if st['overall']=='online' %}🟢{% elif st['overall']=='partial' %}🟡{% elif st['overall']=='unknown' %}⚪{% else %}🔴{% endif %} {{ st['overall_text'] }}
   </div>
   <div class="status-line">Ping: {% if st['status_stale'] %}⚪{% elif st['ping_ok'] %}🟢{% else %}🔴{% endif %} {{ st['ping_text'] }}</div>
-  <div class="status-line">MQTT: {% if st['mqtt_online_ok'] %}🟢{% elif not st['mqtt_configured'] %}⚪{% elif st['mqtt_connected'] %}🟡{% else %}🔴{% endif %} {{ st['mqtt_info'] }}</div>
+  <div class="status-line">MQTT: {% if st['mqtt_online_ok'] %}🟢{% elif not st['mqtt_configured'] %}⚪{% elif st['mqtt_connected'] %}🟡{% else %}🔴{% endif %} {{ st['mqtt_info'] }}{% if st.get('mqtt_received_at') is not none %} (<span data-panel-age="{{ st['mqtt_received_at'] }}">—</span>s siden){% endif %}</div>
   <div class="status-line">Forventet state: {{ st['expected_state'] }}{% if st['expected_state_reason'] %} · {{ st['expected_state_reason'] }}{% endif %}</div>
   {% if st['hostname'] %}<div class="status-line">Hostname: {{ st['hostname'] }}</div>{% endif %}
   {% if st['uptime_seconds'] %}<div class="status-line">Uptime: {{ st['uptime_text'] }}</div>{% endif %}

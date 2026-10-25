@@ -13,7 +13,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `require_web_login()` | Global before-request guard protecting pages, actions and JSON updates; redirects ordinary requests and returns JSON 401 for API/fetch clients. |
 | `private_web_response()` | Adds private/no-store and Vary: Cookie to dynamic responses, including JSON and action results. |
 | `action_response()` | Returns JSON to the initiating fetch request or preserves normal form redirect/flash behavior. |
-| `build_device_status()` | Combines a supplied measured ping with current MQTT, expected state, panel action, jobs and uptime; does not probe devices. |
+| `build_device_status()` | Combines measured ping with current or batch-supplied MQTT/runtime/jobs. Its nested `payload_and_age()` reuses the shared MQTT resolver. Emits a stable receive timestamp rather than age text and reads per-device runtime once; never probes devices. |
 | `dashboard_updates()` | Protected GET /api/dashboard returning per-browser changed fragments plus revision/instance/time metadata. |
 | `run_command()` | Runs a fixed argv command with timeout and captured output; avoids shell=True and gives callers one error format. |
 | `load_json_file()` | Uses PanelJsonCache to parse one version per state file, return isolated copies, and detect changes/deletion/corruption. |
@@ -26,7 +26,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `save_runtime_state_unlocked()` | Atomically saves runtime state; avoids corruption during monitor updates. |
 | `get_device_runtime()` | Returns one device runtime state under lock; callers cannot mutate shared data unsafely. |
 | `update_device_runtime()` | Merges and persists per-device runtime fields under lock; centralizes expected/transition state writes. |
-| `get_expected_state()` | Returns persisted expected state or device default; distinguishes planned downtime from faults. |
+| `get_expected_state()` | Returns expected state from an optional batched runtime record or the existing live reader, then the device default; keeps planned-downtime interpretation in one function. |
 | `set_expected_state()` | Persists expected state, reason and timestamp; power workflows can explain why offline is expected. |
 | `load_panel_jobs_unlocked()` | Loads persistent panel-side job records; job display survives panel restarts. |
 | `save_panel_jobs_unlocked()` | Caps and atomically saves panel jobs; prevents unbounded runtime growth. |
@@ -36,7 +36,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `record_device_event()` | Creates a normalized categorized history record and appends it; one event schema is used across power, MQTT, availability and jobs. |
 | `active_job_status()` | Defines which lifecycle states count as active (`queued`, `running`, `waiting`, `confirming`); `timed_out` is deliberately terminal/non-active. |
 | `apply_job_timeout()` | Builds a non-mutating job view that applies the optional per-button `job_timeout_seconds`, exposes a remaining-seconds counter, and converts unresolved active work to `timed_out` with an explicit note when the deadline passes. |
-| `combined_device_jobs()` | Merges panel jobs with retained remote jobs, applies the common lifecycle-timeout view to both sources, and sorts newest-first; stale active jobs cannot remain counted active forever. |
+| `combined_device_jobs()` | Merges panel/remote sources through PanelJobsCache and applies the shared timeout evaluator with an optional batch time/source snapshot; direct monitor/HA callers retain live defaults. |
 | `ping_host()` | Runs one bounded ping with Linux seconds or macOS milliseconds for `-W`; ping remains independent from MQTT. |
 | `action_to_danish()` | Maps internal action states to Danish UI text while preserving unknown custom values. |
 | `result_to_danish()` | Maps lifecycle/result states to Danish UI text while preserving custom values. |
@@ -53,7 +53,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `get_remote_command_state_received_at()` | Finds newest receive time across remote current command topics; decides whether remote truth supersedes provisional panel state. |
 | `get_device_history()` | Merges remote retained history and panel event history with normalized fields; one page shows the full device journal. |
 | `evaluate_remote_device_status()` | Actively measures ping in the monitor, then delegates to build_device_status(); web routes never call this measurement path. |
-| `build_remote_device_statuses()` | Uses monitor-cached ping only and current in-memory MQTT/jobs; no request-time network probes. Missing/expired measurements are unknown/stale. |
+| `build_remote_device_statuses()` | Checks source identities and server deadlines before reusing one shared prepared view. Its nested `build()` loads runtime/jobs once, snapshots MQTT once, builds all devices, and computes the next MQTT/monitor/job expiry. Web views never ping. |
 | `device_mqtt_online()` | Tests current connected/fresh power=online state; confirmation workers use the same strict MQTT rule. |
 | `device_mqtt_offline()` | Tests current connected/fresh power=offline state; shutdown/reboot are not confirmed merely by publish success. |
 | `execute_and_record_remote_action()` | Creates panel job/history around dispatch and starts expected-state/power confirmation when relevant; web and panel-control MQTT share one path. |
@@ -117,16 +117,17 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | Method | What / why |
 |---|---|
 | `PanelMqttRuntime.__init__()` | Stores dynamic panel providers/callbacks plus panel receive cache, subscription set and diagnostics metadata. The actual long-running transport object is created lazily from the shared module. |
-| `PanelMqttRuntime.set_state()` | Stores latest decoded payload, receive time, retain flag and QoS under lock and returns the previous payload for transition handling. |
+| `PanelMqttRuntime.set_state()` | Stores payload/receive metadata under lock, increments source revision and returns the previous payload; incoming updates invalidate prepared dashboard state. |
 | `PanelMqttRuntime.set_connected()` | Stores broker connectivity plus connect/disconnect timestamps/reason for current panel status evaluation and diagnostics. |
 | `PanelMqttRuntime.get_state()` | Returns an isolated copy of one cached topic record. |
-| `PanelMqttRuntime.get_payload_and_age()` | Returns one cached payload and receive age for panel TTL/status evaluation. |
+| `PanelMqttRuntime.get_payload_and_age()` | Resolves a live topic or batch snapshot with optional shared time; clamps negative ages after clock rewinds and preserves integer-second TTL evaluation. |
+| `PanelMqttRuntime.snapshot()` | Copies receive metadata once under lock for a consistent prepared rebuild; immutable payload strings are shared. |
 | `PanelMqttRuntime.publish_direct()` | Sends HA/telemetry through the shared long-running `MqttClient.publish()` path; no Paho publish handling is duplicated here. |
 | `PanelMqttRuntime.subscription_topics()` | Builds the panel-specific topic set from the explicit current status-topic keys, panel control topic and optional HA birth topic; shared `MqttClient` performs subscribe calls. |
 | `PanelMqttRuntime.build_diagnostics()` | Builds `/mqtt-diagnostics` rows from panel cache/subscription metadata and expected device topics. |
 | `PanelMqttRuntime._connected()` | Runs only panel work after the shared client has connected/subscribed: update diagnostics, publish HA snapshot and record connect/reconnect history. |
 | `PanelMqttRuntime._disconnected()` | Runs only panel disconnect work: update diagnostics and append per-device broker-disconnect history. |
-| `PanelMqttRuntime._message()` | Handles the shared decoded callback shape `(topic, payload, retain, qos)`: cache, retained-control rejection, worker dispatch, HA birth, status/jobs/boot routing. |
+| `PanelMqttRuntime._message()` | Handles the shared decoded callback shape `(topic, payload, retain, qos)`: cache, retained-control rejection, worker dispatch, HA birth, status/jobs/boot routing. Full telemetry prints only when optional `log_payloads` is True; error, connection and action logs remain independent. |
 | `PanelMqttRuntime._ensure_transport()` | Creates one shared `MqttClient` with current panel settings, subscriptions, callbacks, reconnect policy and optional HA Last Will. |
 | `PanelMqttRuntime.start()` | Starts the panel monitor and the shared client in asynchronous-threaded reconnect mode. |
 
@@ -211,6 +212,8 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 
 | Function | What / why |
 |---|---|
+| `power_script_cli()` | Handles the four power scripts’ help/version using root `VERSION`, or rejects unsupported arguments with exit 2; called before config/privilege/state/power work. |
+| `load_control_status()` | Loads the existing agent shell integration only for root with an active config, after CLI inspection; normal power/status behavior stays centralized. |
 | `run_shutdown_command()` | Runs shutdown directly as root or through sudo otherwise; shared scripts work for remote agent and local panel. |
 | `json_get()` | Reads required dotted JSON config key with Python parser. |
 | `ensure_dirs()` | Creates remote state/log directories. |
@@ -294,11 +297,12 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 | Class / method | What / why |
 |---|---|
 | `PanelJsonCache.__init__()` | Creates one lock and file-version dictionary for the fixed runtime files. |
+| `PanelJsonCache.version()` | Returns inode/mtime/ctime/size, or None when missing, without loading/copying cached data; prepared requests detect external edits with one check per source. |
 | `PanelJsonCache.load()` | Checks inode/mtime/ctime/size, parses changed JSON, and returns deep copies; missing/corrupt files evict old data. |
 | `PanelJobsCache.__init__()` | Creates one lock and current source/result entry per configured device. |
 | `PanelJobsCache.merge()` | Merges/de-duplicates/sorts panel and remote job sources only when content changes; returns isolated copies before time-dependent timeout evaluation. |
-| `PanelDashboardCache.__init__()` | Creates process-instance ID, monotonic revision counter, lock and current card entries. |
-| `PanelDashboardCache.snapshot()` | Rebuilds changed escaped fragments, then returns full initial/reset cards or only cards newer than a browser's cursor. Shared cache excludes usernames, flashes and session data. |
+| `PanelDashboardCache.__init__()` | Creates separate prepare/render locks, one prepared view, process-instance/revision state and bounded per-device row caches. |
+| `PanelDashboardCache.snapshot()` | Synchronizes changed sources once, returns status/job revision deltas and only each browser’s requested prefix, and keeps all private session content outside the cache. |
 
 ## Browser functions and callbacks in `static/dashboard.js`
 
@@ -308,7 +312,7 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 | `updateJobs()` | Replaces only job items while preserving the list element, focus and scroll anchor. |
 | `updateStatus()` | Replaces only one changed status card; preserves focused action and pending button state. |
 | `loginRequired()` | Returns to login when the API or action response reports session expiry (401). |
-| `poll()` | Sends since/instance cursor, applies changed cards, handles timeout/retry, prevents overlap, and marks disconnected data. |
+| `poll()` | Serializes global polls and pending older-job reads with one in-flight request; carries loaded counts, preserves the global cursor after one-device responses, handles timeout/retry and pauses while hidden. |
 | `showMessage()` | Displays a result only in the initiating browser using textContent. |
 | Submit callback | Respects cancelled inline confirmation, disables pending actions, POSTs once, shows private result and polls; never retries a command. |
 | Visibility callback | Pauses hidden-tab polling and refreshes immediately when visible again. |
@@ -319,7 +323,7 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 
 | Command / block | What / why |
 |---|---|
-| `python3 app.py` | Starts one Waitress process with four request threads plus panel MQTT/status workers; no app CLI flags. |
+| `python3 app.py` | Starts one Waitress process with four request threads plus panel MQTT/status workers with no arguments; help/version exit before startup. |
 | `python3 homelab_control_command_listener.py` | Loads the agent allow-list and runs the MQTT command listener. |
 | `python3 homelab_control_status_indicator.py` | Starts Linux availability/boot/uptime/current-status publication; Linux `/proc` supplies uptime and boot identity. |
 | `python3 shared_modules/mqtt.py --config PATH --topic TOPIC --qos 1 --retain` | Publishes the stdin payload as retained telemetry through Paho. The same CLI without `--retain` can send commands. The JSON config supplies credentials without placing them in argv. |
@@ -335,11 +339,12 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 
 ### `shared_modules/mqtt.py` CLI flags
 
-`cli_main()` is the only project-owned argument parser. The long-running panel/agent programs and the power scripts do not parse CLI flags, so their behavior must be configured through the tracked config examples rather than command-line switches.
+The shared publisher has publishing options plus help/version. The three service entry points reuse `shared_modules/cli.py` for help/version before private configuration or runtime imports. The four power scripts reuse `power_script_cli()` before `load_control_status()`. Runtime settings remain in the configuration examples.
 
 | Flag | What it does / why it exists |
 |---|---|
 | `-h`, `--help` | Lets an operator inspect the complete publisher interface without reading stdin/config or contacting MQTT. |
+| `--version` | Prints the program name and packaged root `VERSION`, then exits before reading publishing inputs. |
 | `--config PATH` | Selects normal CLI mode and reads the required top-level `mqtt` object from JSON. Broker credentials therefore remain in the config file instead of argv. |
 | `--request-stdin` | Internal mutually exclusive worker mode used by `publish_message()`. The entire request arrives as JSON on stdin and the worker emits `[success, message]`, allowing the parent to impose a hard process timeout. |
 | `--topic TOPIC` | Selects the exact publication destination in normal mode. `_publish_once()` rejects empty names and MQTT `+` / `#` wildcard publication topics before connecting. |
@@ -370,7 +375,7 @@ The parser help includes the normal stdin contract, a retained-telemetry example
 | Unit `User` / `Group`, `WorkingDirectory`, `ExecStart` | Select service identity, working directory, and Python entry point; deployment paths must match the complete installed tree. |
 | Unit `Restart`, `RestartSec`, `WantedBy` | Select restart policy/delay and boot target; the panel restarts on failure, while both agent units restart on any exit. |
 
-The README's **Command flag reference** documents the values, units, and examples for operator-facing commands. The three long-running Python applications and power scripts have no argument parser; passing `--help` to those entry points does not create a safe inspection mode. The standalone `shared_modules/mqtt.py` publisher does support safe `--help`.
+The README's **Command flag reference** documents the values, units, and examples for operator-facing commands. All eight operator entry points support safe `-h`/`--help` and `--version`. Service programs reject unknown arguments before configuration/import startup. Power scripts reject unsupported/extra arguments before privilege checks or agent setup; running with no arguments performs the power operation. Shell libraries are sourced helpers.
 
 ## `tests/test_home_assistant.py`
 
@@ -418,7 +423,7 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 | `publish_message()` | Runs `_publish_once()` in a child invocation of this same module so DNS/connect/send are bounded by a hard parent timeout and credentials/payload remain off argv. |
 | `cli_main()` | Implements the standalone `shared_modules/mqtt.py` CLI. It defines every flag, value metavariable, default/safety help text, the normal stdin example, normal config/topic validation, the internal JSON worker path, and exit-status mapping. |
 
-`shared_modules/` intentionally contains no panel history/HA/actions and no control jobs/status logic. Those are application responsibilities rather than reusable transport.
+`shared_modules/cli.py` also provides generic CLI inspection/version reporting. `shared_modules/` intentionally contains no panel history/HA/actions and no control jobs/status logic. Those are application responsibilities rather than reusable transport.
 
 ## `tests/test_mqtt_publish.py`
 
@@ -474,3 +479,79 @@ This is the **only generic MQTT implementation** in production. Both `homelab-pa
 | `test_script_entry_uses_waitress_once_instead_of_development_server()` | Checks direct startup uses Waitress and never Flask.run(). |
 
 `tests/dashboard_browser.cjs` runs an optional real Chromium/Waitress check. Its localhost-only Python fixture uses `fake_action()`, `add_jobs()`, `change_job()` and `restart_cache()` exclusively inside the test process; these endpoints do not exist in the production application. The test covers login, incremental updates, no navigation on commands, confirmation cancellation, XSS escaping, job focus/scroll, private results, network recovery, hidden-tab pause, process-cache reset, mobile width and session expiry. All external device/MQTT work is mocked.
+
+
+## Shared CLI inspection: `shared_modules/cli.py`
+
+| Function / block | What / why |
+|---|---|
+| `add_version_argument()` | Reads root `VERSION` once when building a parser and registers argparse’s version action; all Python entry points reuse the same version source. |
+| `parse_service_cli()` | Defines service help/version, rejects unsupported arguments, and returns only for a normal no-argument start; called before service config/dependency imports to prevent accidental startup during inspection. |
+| Entry-point `if __name__ == "__main__"` inspection blocks | Apply the shared parser to direct service execution only, preserving existing import behavior and one-process Waitress startup. |
+| MQTT direct-file path setup | Adds the project root so both direct-file execution and imported callers find the same `shared_modules.cli`; publishing remains in the existing MQTT implementation. |
+| Power-script preamble | Sources common definitions, calls `power_script_cli()` with that action’s description, then `load_control_status()`; no-argument paths keep original command arguments and status transitions. |
+
+## `tests/test_cli.py`
+
+| Function | What / why |
+|---|---|
+| `test_service_inspection_precedes_dependencies_and_private_configs()` | Launches all three service CLIs from another directory with Python `-S` (no installed site packages), covering help/version, unknown flags and positional errors before startup. |
+| `test_publisher_version_precedes_input_and_publication()` | Blocks private-config opening/publication and verifies version exits without required publishing options. |
+| `prepare_scripts()` | Creates a disposable scripts/VERSION install for tests so shell checks cannot use host power commands. |
+| `test_power_inspection_and_errors_never_enter_privileged_setup()` | Traps id/sudo/shutdown/Python and installs invalid agent config/library; all four scripts must inspect/reject arguments without invoking setup or writing runtime state. |
+| `test_power_actions_preserve_root_sudo_argv_and_failure_status()` | Captures all four real script argv paths using stubs, for root/non-root and success/failure; verifies exact original delay/cancellation arguments and exit status without a real power action. |
+
+`tests/test_dashboard.py` patches `sys.argv` to an actual no-argument `app.py` invocation in its runpy startup test; unittest runner arguments are not service arguments. `config.example.py` includes optional panel `keepalive` (default 60) consumed by the existing shared long-running MQTT client. Both disclaimer blocks remain in README with project-local links.
+
+
+## Prepared dashboard and lazy job interfaces
+
+| Function / method / block | What / why |
+|---|---|
+| `PanelDashboardCache.prepare()` | Shares one build under a lock per source generation, expiry deadline or backwards clock step; warm polls avoid state loads/status construction/job evaluation. Returned view is private read-only app state. |
+| `PanelDashboardCache._sync()` | Skips all source comparison for the same prepared object, prunes removed devices, rebuilds only changed escaped status sources, and resets job rows only when their source changes. |
+| `PanelDashboardCache._job_window()` | Lazily renders missing rows up to a requested count, reuses each row across window sizes, and returns total/count metadata; cache stores at most one HTML string per retained row. |
+| `PanelDashboardCache.job_window()` | Returns one device’s expanded prefix under the render lock without retaining per-browser windows. |
+| `build()` (nested in `build_remote_device_statuses()`) | Loads runtime/job sources once under their existing locks and MQTT once; constructs stable status/job views, removes display-only remaining seconds, and returns the earliest future freshness/timeout deadline. |
+| `payload_and_age()` (nested in `build_device_status()`) | Passes the optional common MQTT snapshot/time to the existing receive-age resolver so batch evaluation stays consistent. |
+| `dashboard_response()` | Adds fresh server epoch and display time to a response outside shared HTML, allowing independent browser clocks without shared cache churn. |
+| `older_device_jobs()` | Protected GET `/api/jobs/<device_id>?limit=N`; validates device/count and returns an escaped current prefix without mutating history or executing commands. |
+| `dashboard_updates()` | Validates optional JSON `jobs` counts alongside existing revision/instance cursors; rejects non-object, unknown-device, boolean, negative and over-limit windows before rendering. |
+| `index()` | Uses the configured initial batch; explicit `?jobs=all` preserves a no-JavaScript path to all retained jobs. |
+| `apply_job_timeout()` | Keeps existing countdown/terminal classification and additionally exposes a stable numeric `timeout_deadline`; batch callers provide one time and the browser only displays remaining seconds. |
+| `get_remote_command_state_received_at()` | Accepts the same optional MQTT snapshot so provisional-versus-remote precedence uses one coherent receive view. |
+| `updateClocks()` | Updates only age/countdown text once per visible second using server epoch plus monotonic browser elapsed time; never changes authoritative state or sends requests. |
+| `syncClock()` | Resynchronizes the local display clock after each successful shared/older-job response. |
+| `updateMoreButton()` | Hides the older-jobs button after all available rows are loaded and disables duplicate pending loads. |
+| `requestMoreJobs()` | Queues one bounded next-prefix request per device; normal polling and loads use the same request queue. |
+| `applyFragments()` | Applies shared status/job responses, updates loaded-count metadata and button state, and synchronizes display clocks; no session data enters fragments. |
+| `atBottom()` / scroll / wheel / keydown callbacks | Detect user demand for older rows; support an initially non-scrollable five-row list, keyboard navigation, and ignore programmatic scroll while replacing rows. |
+| Older-jobs click callback | Offers an accessible explicit load/retry action using the same queue as scroll/key demand. |
+| Visibility callback | Pauses both polling and the display-clock interval while hidden; resumes clocks/polling once visible. |
+| `[hidden]` CSS rule | Makes hidden controls reliably disappear despite the existing generic button display rule. |
+
+`DASHBOARD_JOB_PAGE_SIZE` is optional in existing active configs (default 5, min 1, capped by the retention limit); `MQTT_CONFIG.log_payloads` is optional (default False). The existing monitor, MQTT transport, action allow-lists, direct-agent behavior, persistence formats and command CLI flags are preserved. Snapshot keys include MQTT revision/connectivity, ping measurements, provisional actions, WoL activity, device settings and runtime/job file identities. Server deadlines cover integer-second MQTT TTL expiry, stale monitor measurements and every active retained job, including unloaded rows.
+
+## Performance regression functions in `tests/test_dashboard.py`
+
+| Function | What / why |
+|---|---|
+| `seed_jobs()` | Writes a full bounded example source in one fixture save. |
+| `test_prepared_snapshot_reuses_all_work_and_batches_source_loads()` | Requires exactly two state loads on a cold build and zero loads/status builds/timeout evaluations/renders across unchanged polls from two clients. |
+| `test_age_and_countdown_do_not_invalidate_before_server_deadline()` | Requires clock-only polls to reuse HTML, then verifies server timeout at the exact deadline. |
+| `test_prepared_cache_enforces_mqtt_and_monitor_expiry_and_clock_rewind()` | Tests integer TTL boundary, monitor expiry and backwards server clock invalidation without new MQTT messages. |
+| `test_prepared_sources_invalidate_on_runtime_jobs_mqtt_actions_and_wol()` | Exercises source changes including expected state, MQTT hostname, provisional action, WoL activity and device configuration. |
+| `test_external_source_replacement_corruption_and_deletion_invalidate_prepared_view()` | Ensures file replacement, corruption and deletion cannot retain stale prepared data. |
+| `test_lazy_jobs_render_only_requested_rows_and_reuse_bounded_row_cache()` | Verifies initial five of 100, five extra renders for a ten-row window, row reuse, independent browser windows, full retained data and no-JavaScript access. |
+| `test_expanded_windows_stay_current_on_new_jobs_and_timeout()` | Verifies inserted jobs reorder expanded prefixes correctly and server timeout remains active on older-job requests. |
+| `test_job_window_auth_validation_escape_and_no_shared_session_data()` | Tests protected/escaped read-only windows, private headers and invalid input bounds. |
+| `test_mqtt_payload_logging_is_optional_without_silencing_errors()` | Checks absent/False/True logging settings, receive state updates and retained-control/disconnection messages. |
+| `test_prepared_cache_build_is_serialized_across_threads()` | Starts six simultaneous readers and requires exactly one shared preparation build. |
+| `read()` (nested in that test) | Synchronizes concurrent fixture callers at a barrier before reading the cache. |
+
+The browser fixture also defines `add_clocks()` (receive time plus a short active deadline) and `many_jobs()` (a 30-row retained source), only inside the test process. Browser checks cover local clock ticks without DOM replacement, server timeout, initial batching, explicit/wheel/keyboard expansion, failed-read retry and serialization with a delayed global poll. Production has no `_test` routes.
+
+
+- `test_unloaded_job_deadline_still_updates_active_count()` verifies that an active older job outside the initial five still expires server-side, updates the active count, remains available on expansion and leaves persisted data unchanged.
+- `test_custom_initial_batch_does_not_change_retention()` verifies a configured two-row initial batch independently of the retained job count.
+- `_job_window()` appends a small scroll-for-more sentinel when older rows exist, providing a scroll target even if the initial batch exactly fits the list. It disappears after the complete prefix is loaded. The existing Waitress startup fixture also omits `DASHBOARD_JOB_PAGE_SIZE` to exercise the default for older active configs.

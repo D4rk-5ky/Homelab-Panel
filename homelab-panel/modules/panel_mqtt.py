@@ -35,10 +35,12 @@ class PanelMqttRuntime:
         self.state, self.state_lock, self.subscriptions = {}, threading.Lock(), set()
         self.connection_info = {"connected_at": "", "disconnected_at": "", "disconnect_reason": ""}
         self.connected, self.transport = False, None
+        self.revision = 0
 
     def set_state(self, topic: str, payload: str, retain: bool, qos: int) -> str | None:
         with self.state_lock:
             previous = self.state.get(topic)
+            self.revision += 1
             self.state[topic] = {"payload": payload, "timestamp": time.time(),
                                  "received_at": datetime.now().isoformat(timespec="seconds"),
                                  "retain": bool(retain), "qos": int(qos)}
@@ -59,9 +61,17 @@ class PanelMqttRuntime:
             value = self.state.get(topic)
             return dict(value) if isinstance(value, dict) else None
 
-    def get_payload_and_age(self, topic: str) -> tuple[str | None, int | None]:
-        state = self.get_state(topic)
-        return (None, None) if not state else (str(state["payload"]).strip(), int(time.time() - float(state["timestamp"])))
+    def snapshot(self) -> dict:
+        """Copy receive metadata once for a consistent prepared dashboard update."""
+        with self.state_lock:
+            return {topic: dict(value) for topic, value in self.state.items()}
+
+    def get_payload_and_age(self, topic: str, *, states=None, now=None) -> tuple[str | None, int | None]:
+        state = self.get_state(topic) if states is None else states.get(topic)
+        if not state:
+            return None, None
+        epoch = time.time() if now is None else now
+        return str(state["payload"]).strip(), max(0, int(epoch - float(state["timestamp"])))
 
     def publish_direct(self, topic: str, payload: str, qos: int, retain: bool) -> bool:
         if self.transport is None or not self.connected:
@@ -155,7 +165,8 @@ class PanelMqttRuntime:
         self._handle_device_power_transition(topic, previous_payload, payload)
         self._process_remote_jobs_message(topic, payload)
         self._handle_boot_id_message(topic, payload)
-        print(f"Homelab-panel MQTT message: {topic} = {payload}", flush=True)
+        if self._mqtt_config().get("log_payloads", False):
+            print(f"Homelab-panel MQTT message: {topic} = {payload}", flush=True)
 
     def _ensure_transport(self) -> MqttClient:
         if self.transport is not None:

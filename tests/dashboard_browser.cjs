@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, "tests")
 from test_home_assistant import load_panel
 from flask import request, jsonify
+from datetime import datetime
 from waitress import create_server
 panel = load_panel()
 state = tempfile.TemporaryDirectory()
@@ -39,6 +40,22 @@ def add_jobs():
 @panel.app.post("/_test/change-job")
 def change_job():
     panel.update_panel_job("aoostar_wtr", "browser-8", message="Updated job without navigation")
+    return jsonify(ok=True)
+@panel.app.post("/_test/many-jobs")
+def many_jobs():
+    panel.save_panel_jobs_unlocked({"aoostar_wtr": [
+        {"job_id": "paging-" + str(i), "status": "success", "message": "Page row " + str(i),
+         "updated_at": str(i).zfill(4)} for i in range(30)]})
+    return jsonify(ok=True)
+@panel.app.post("/_test/clocks")
+def add_clocks():
+    now = time.time()
+    panel.DEVICE_STATUS_CACHE["aoostar_wtr"] = {"ping_ok": True, "cached_at": now}
+    panel.MQTT_RUNTIME.connected = True
+    panel.MQTT_RUNTIME.set_state("aoostar/status/power", "online", False, 0)
+    panel.update_panel_job("aoostar_wtr", "clock-job", status="confirming", command="custom",
+                           label="Clock test", started_at=datetime.fromtimestamp(now).isoformat(),
+                           updated_at="9999", job_timeout_seconds=5)
     return jsonify(ok=True)
 @panel.app.post("/_test/restart-cache")
 def restart_cache():
@@ -95,7 +112,12 @@ server.run()
     });
     await page.evaluate(() => { window.shellMarker = 'persistent'; });
     await context.request.post(base + '/_test/jobs');
+    await page.waitForFunction(() => document.querySelectorAll('[data-device-id="aoostar_wtr"] .job').length === 5);
+    assert.equal(await page.locator('[data-device-id="aoostar_wtr"] .job').count(), 5);
+    assert.equal(await page.locator('[data-job-id="browser-0"]').count(), 0, 'Older rows must not be in initial HTML');
+    await page.locator('[data-jobs-more="aoostar_wtr"]').click();
     await page.waitForFunction(() => document.querySelectorAll('[data-device-id="aoostar_wtr"] .job').length === 9);
+    await page.locator('[data-jobs-more="aoostar_wtr"]').waitFor({ state: 'hidden' });
     assert.equal(await page.evaluate(() => window.injected), undefined);
     const list = page.locator('.job-list[data-device-id="aoostar_wtr"]');
     await list.evaluate((node) => { node.focus(); node.scrollTop = 100; node.testMarker = true; });
@@ -145,10 +167,73 @@ server.run()
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(100);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    // Age/countdown text advances without replacing cached cards or job rows.
+    await context.request.post(base + '/_test/clocks');
+    await page.waitForSelector('[data-job-id="clock-job"] [data-panel-countdown]');
+    const countdown = page.locator('[data-job-id="clock-job"] [data-panel-countdown]');
+    const age = page.locator('[data-device-status="aoostar_wtr"] [data-panel-age]');
+    const beforeClock = Number(await countdown.innerText());
+    const beforeAge = Number(await age.innerText());
+    await countdown.evaluate((node) => { node.testMarker = 'clock-node'; });
+    await page.waitForTimeout(1200);
+    assert.ok(Number(await countdown.innerText()) < beforeClock, 'Countdown should tick locally');
+    assert.ok(Number(await age.innerText()) > beforeAge, 'MQTT age should tick locally');
+    assert.equal(await countdown.evaluate((node) => node.testMarker), 'clock-node', 'Clock-only polls must reuse HTML');
+    await page.waitForSelector('[data-job-id="clock-job"].timed_out');
+    assert.equal(await page.locator('[data-job-id="clock-job"] [data-panel-countdown]').count(), 0);
+    assert.equal(await page.evaluate(() => window.shellMarker), 'persistent');
+    // Older rows load on wheel/keyboard/button demand, and failed reads can be retried.
+    await context.request.post(base + '/_test/many-jobs');
+    const paging = await context.newPage();
+    await paging.goto(base);
+    const pagingList = paging.locator('.job-list[data-device-id="aoostar_wtr"]');
+    const pagingMore = paging.locator('[data-jobs-more="aoostar_wtr"]');
+    assert.equal(await pagingList.locator('.job').count(), 5);
+    const reads = new Set();
+    let maxReads = 0;
+    paging.on('request', (request) => {
+      if (request.url().includes('/api/dashboard') || request.url().includes('/api/jobs/')) {
+        reads.add(request); maxReads = Math.max(maxReads, reads.size);
+      }
+    });
+    paging.on('requestfinished', (request) => reads.delete(request));
+    paging.on('requestfailed', (request) => reads.delete(request));
+    await pagingList.hover();
+    await paging.mouse.wheel(0, 300);
+    await paging.waitForFunction(() => Number(document.querySelector('.job-list').dataset.jobsLimit) === 10);
+    await pagingList.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    await paging.waitForFunction(() => Number(document.querySelector('.job-list').dataset.jobsLimit) === 15);
+    // Allow one deliberately failed older-job read, then retry with the same button.
+    await paging.route('**/api/jobs/*', (route) => route.abort(), { times: 1 });
+    await Promise.all([
+      paging.waitForEvent('requestfailed', (request) => request.url().includes('/api/jobs/')),
+      pagingMore.click(),
+    ]);
+    await paging.waitForFunction(() => !document.querySelector('[data-jobs-more="aoostar_wtr"]').disabled);
+    assert.equal(await pagingList.locator('.job').count(), 15);
+    await pagingMore.click();
+    await paging.waitForFunction(() => Number(document.querySelector('.job-list').dataset.jobsLimit) === 20);
+    // Queue a load behind a delayed global poll; neither request may overlap the other.
+    await paging.route('**/api/dashboard*', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.continue();
+    });
+    await paging.waitForRequest((request) => request.url().includes('/api/dashboard'));
+    await pagingMore.click();
+    await paging.waitForFunction(() => Number(document.querySelector('.job-list').dataset.jobsLimit) === 25);
+    assert.equal(maxReads, 1, 'Global polls and older-job reads must be serialized');
+    await paging.unroute('**/api/dashboard*');
+    await pagingList.focus();
+    await pagingList.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    await pagingList.press('End');
+    await paging.waitForFunction(() => Number(document.querySelector('.job-list').dataset.jobsLimit) === 30);
+    assert.equal(await pagingList.locator('.job').count(), 30);
+    await pagingMore.waitFor({ state: 'hidden' });
+    await paging.close();
     await context.clearCookies();
     await page.waitForURL(base + '/login');
     assert.deepEqual(errors, []);
-    console.log('PASS: real Waitress + Chromium: login, deltas, no reload, escaped jobs, scroll/focus, confirmations, private results, network recovery, hidden-tab pause, restart, mobile, session expiry');
+    console.log('PASS: real Waitress + Chromium: login, deltas, no reload, escaped jobs, scroll/focus, confirmations, private results, network recovery, hidden-tab pause, restart, mobile, session expiry, lazy jobs, local clocks, authoritative timeout, scroll/keyboard paging, read retry and serialized requests');
   } finally {
     if (browser) await browser.close();
     server.kill('SIGTERM');

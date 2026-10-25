@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/homelab_action_common.sh"
 
+power_script_cli "Schedule Linux shutdown in one minute (shutdown -h +1)." "$@"
+load_control_status
+
 CMD='shutdown -h +1 "Shutdown requested from Homelab Control Panel"'
 
 if [[ "${CONTROL_STATUS_ENABLED}" -eq 1 ]]; then

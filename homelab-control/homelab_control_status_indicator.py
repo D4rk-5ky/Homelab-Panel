@@ -14,6 +14,11 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# Parse inspection options before importing runtime dependencies or private configs.
+if __name__ == "__main__":
+    from shared_modules.cli import parse_service_cli
+    parse_service_cli('Run the Homelab Control Linux status indicator. Publishes availability, uptime, boot information and command history using homelab-control/configs/config.json. No arguments starts the service.')
+
 from shared_modules.mqtt import MqttClient
 STATE_DIR = os.path.join(BASE_DIR, "state")
 CONFIG_FILE = os.path.join(BASE_DIR, "configs", "config.json")

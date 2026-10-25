@@ -14,6 +14,66 @@
   let timer;
   let inFlight = null;
   let refreshRequested = false;
+  const moreButtons = new Map(Array.from(document.querySelectorAll('[data-jobs-more]'),
+    (node) => [node.dataset.jobsMore, node]));
+  const pendingLoads = new Map();
+  let activeLoad = null;
+  let clockTimer;
+  let clockEpoch = config.serverEpoch * 1000;
+  let clockStarted = performance.now();
+
+  function updateClocks() {
+    if (document.hidden) return;
+    // Use server time + monotonic elapsed time, independent of the browser's wall clock.
+    const now = (clockEpoch + performance.now() - clockStarted) / 1000;
+    document.querySelectorAll('[data-panel-age]').forEach((node) => {
+      node.textContent = Math.max(0, Math.floor(now - Number(node.dataset.panelAge)));
+    });
+    document.querySelectorAll('[data-panel-countdown]').forEach((node) => {
+      node.textContent = Math.max(0, Math.ceil(Number(node.dataset.panelCountdown) - now));
+    });
+  }
+
+  function syncClock(epoch) {
+    clockEpoch = epoch * 1000;
+    clockStarted = performance.now();
+    updateClocks();
+  }
+
+  function updateMoreButton(deviceId) {
+    const list = jobLists.get(deviceId);
+    const button = moreButtons.get(deviceId);
+    if (!button) return;
+    button.hidden = Number(list.dataset.jobsLimit) >= Number(list.dataset.jobsTotal);
+    button.disabled = pendingLoads.has(deviceId) || activeLoad === deviceId;
+  }
+
+  function requestMoreJobs(deviceId) {
+    const list = jobLists.get(deviceId);
+    if (!list || pendingLoads.has(deviceId) || activeLoad === deviceId) return;
+    const limit = Number(list.dataset.jobsLimit);
+    const total = Number(list.dataset.jobsTotal);
+    if (limit >= total) return;
+    pendingLoads.set(deviceId, Math.min(total, limit + config.jobPageSize));
+    updateMoreButton(deviceId);
+    poll();
+  }
+
+  function applyFragments(data) {
+    for (const [deviceId, fragments] of Object.entries(data.devices)) {
+      if (fragments.status !== undefined && statusCards.has(deviceId)) {
+        updateStatus(statusCards.get(deviceId), fragments.status);
+      }
+      if (fragments.jobs !== undefined && jobLists.has(deviceId)) {
+        const list = jobLists.get(deviceId);
+        list.dataset.jobsLimit = fragments.jobs_limit;
+        list.dataset.jobsTotal = fragments.jobs_total;
+        updateJobs(list, fragments.jobs);
+        updateMoreButton(deviceId);
+      }
+    }
+    syncClock(data.server_epoch);
+  }
 
   function fitFiveJobs(list) {
     const jobs = list.querySelectorAll('.job');
@@ -29,6 +89,7 @@
       .find((job) => job.getBoundingClientRect().bottom > listTop);
     const anchorId = anchor?.dataset.jobId;
     const offset = anchor ? anchor.getBoundingClientRect().top - listTop : 0;
+    list.dataset.updating = "true";
     list.innerHTML = html;
     fitFiveJobs(list);
     // Readers scrolling through history keep their place when new jobs arrive.
@@ -37,6 +98,7 @@
     list.scrollTop = replacement
       ? list.scrollTop + replacement.getBoundingClientRect().top - listTop - offset
       : oldTop;
+    requestAnimationFrame(() => { delete list.dataset.updating; });
   }
 
   function updateStatus(card, html) {
@@ -67,9 +129,18 @@
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
       try {
-        const url = new URL(config.url, window.location.href);
-        url.searchParams.set('since', revision);
-        url.searchParams.set('instance', instance);
+        activeLoad = pendingLoads.size ? pendingLoads.keys().next().value : null;
+        const target = activeLoad ? jobLists.get(activeLoad).dataset.jobsUrl : config.url;
+        const url = new URL(target, window.location.href);
+        if (activeLoad) {
+          url.searchParams.set('limit', pendingLoads.get(activeLoad));
+          pendingLoads.delete(activeLoad);
+        } else {
+          url.searchParams.set('since', revision);
+          url.searchParams.set('instance', instance);
+          url.searchParams.set('jobs', JSON.stringify(Object.fromEntries(
+            Array.from(jobLists, ([id, list]) => [id, Number(list.dataset.jobsLimit)]))));
+        }
         const response = await fetch(url, {
           headers: { Accept: 'application/json' }, credentials: 'same-origin',
           cache: 'no-store', signal: controller.signal,
@@ -77,16 +148,14 @@
         const data = await response.json();
         if (loginRequired(response, data)) return;
         if (!response.ok) throw new Error('Status request failed');
-        for (const [deviceId, fragments] of Object.entries(data.devices)) {
-          if (fragments.status !== undefined && statusCards.has(deviceId)) {
-            updateStatus(statusCards.get(deviceId), fragments.status);
-          }
-          if (fragments.jobs !== undefined && jobLists.has(deviceId)) {
-            updateJobs(jobLists.get(deviceId), fragments.jobs);
-          }
+        applyFragments(data);
+        if (activeLoad) {
+          // This response covers one device only. Keep the global cursor until a full poll.
+          refreshRequested = true;
+        } else {
+          revision = data.revision;
+          instance = data.instance;
         }
-        revision = data.revision;
-        instance = data.instance;
         document.getElementById('dashboard-updated-at').textContent = data.updated_at;
         connection.hidden = true;
       } catch (_) {
@@ -94,13 +163,16 @@
         connection.hidden = false;
       } finally {
         clearTimeout(timeout);
+        const finishedLoad = activeLoad;
+        activeLoad = null;
+        if (finishedLoad) updateMoreButton(finishedLoad);
       }
     })();
     try {
       await inFlight;
     } finally {
       inFlight = null;
-      const delay = refreshRequested ? 0 : config.refreshMilliseconds;
+      const delay = refreshRequested || pendingLoads.size ? 0 : config.refreshMilliseconds;
       refreshRequested = false;
       if (!document.hidden) timer = setTimeout(poll, delay);
     }
@@ -144,7 +216,21 @@
     }
   });
 
-  jobLists.forEach((list) => {
+  moreButtons.forEach((button, id) => {
+    button.addEventListener('click', () => requestMoreJobs(id));
+    updateMoreButton(id);
+  });
+  jobLists.forEach((list, deviceId) => {
+    const atBottom = () => list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
+    list.addEventListener('scroll', () => {
+      if (!list.dataset.updating && list.scrollTop > 0 && atBottom()) requestMoreJobs(deviceId);
+    }, { passive: true });
+    list.addEventListener('wheel', (event) => {
+      if (event.deltaY > 0 && atBottom()) requestMoreJobs(deviceId);
+    }, { passive: true });
+    list.addEventListener('keydown', (event) => {
+      if (['ArrowDown', 'PageDown', 'End'].includes(event.key) && atBottom()) requestMoreJobs(deviceId);
+    });
     fitFiveJobs(list);
     if ('ResizeObserver' in window) {
       let previousWidth;
@@ -159,7 +245,14 @@
   });
   document.addEventListener('visibilitychange', () => {
     clearTimeout(timer);
-    if (!document.hidden) poll();
+    clearInterval(clockTimer);
+    if (!document.hidden) {
+      updateClocks();
+      clockTimer = setInterval(updateClocks, 1000);
+      poll();
+    }
   });
+  updateClocks();
+  if (!document.hidden) clockTimer = setInterval(updateClocks, 1000);
   timer = setTimeout(poll, config.refreshMilliseconds);
 })();

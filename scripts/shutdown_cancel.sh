@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/homelab_action_common.sh"
 
+power_script_cli "Cancel a scheduled Linux shutdown or reboot (shutdown -c)." "$@"
+load_control_status
+
 CMD='shutdown -c'
 
 if run_shutdown_command -c; then

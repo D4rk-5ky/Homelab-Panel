@@ -5,6 +5,7 @@
   <title>Homelab Kontrolpanel</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    [hidden] { display:none !important; }
     body { font-family: Arial, sans-serif; margin: 0; background: #111827; color: #f3f4f6; }
     .wrap { max-width: 1300px; margin: 0 auto; padding: 20px; }
     .card { background: #1f2937; border-radius: 12px; padding: 18px; margin-bottom: 18px; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
@@ -75,16 +76,18 @@
 
   <div class="card">
     <h2>🧰 Jobstatus</h2>
-    <p class="muted">Nyeste jobs vises først. Scroll i listen for at se ældre jobs.</p>
+    <p class="muted">Nyeste jobs vises først. Scroll ned eller vælg Vis ældre jobs for at hente flere.</p>
+    <noscript><p><a class="nav-link" href="{{ url_for('index', jobs='all') }}">Vis alle bevarede jobs</a></p></noscript>
     <p class="muted">Farver: grøn = succes, rød = fejl, gul/orange = aktiv eller venter, lilla = timed out. Et timed-out job tæller ikke længere som aktivt.</p>
     <p class="muted">Jobs kan køre parallelt på samme eller forskellige hosts. Remote success/failure kommer fra Homelab Control scriptets exit code; MQTT publish alene tæller kun som afsendt.</p>
     <div class="status-grid">
       {% for device_id, device in remote_devices.items() %}
         <div class="status-box">
           <div class="status-title">{{ device['title'] }}</div>
-          <ul class="job-list" tabindex="0" aria-label="Jobstatus for {{ device['title'] }}" data-device-id="{{ device_id }}">
+          <ul class="job-list" tabindex="0" aria-label="Jobstatus for {{ device['title'] }}" data-device-id="{{ device_id }}" data-jobs-limit="{{ dashboard.devices[device_id].jobs_limit }}" data-jobs-total="{{ dashboard.devices[device_id].jobs_total }}" data-jobs-url="{{ url_for('older_device_jobs', device_id=device_id) }}">
             {{ dashboard.devices[device_id].jobs|safe }}
           </ul>
+          <button class="neutral small-button" type="button" data-jobs-more="{{ device_id }}" hidden>Vis ældre jobs</button>
         </div>
       {% endfor %}
     </div>
@@ -136,7 +139,8 @@
 <script id="dashboard-config" type="application/json">{{ {
   "url": url_for('dashboard_updates'), "loginUrl": url_for('login'),
   "revision": dashboard.revision, "instance": dashboard.instance,
-  "refreshMilliseconds": page_refresh_seconds * 1000
+  "refreshMilliseconds": page_refresh_seconds * 1000,
+  "serverEpoch": server_epoch, "jobPageSize": job_page_size
 }|tojson }}</script>
 <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
 </body>

@@ -12,11 +12,21 @@ class PanelJsonCache:
         self._lock = threading.Lock()
         self._files = {}
 
+    @staticmethod
+    def version(path):
+        """Check one file identity without loading/copying its cached contents."""
+        try:
+            stat = os.stat(path)
+            return (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        except OSError:
+            return None
+
     def load(self, path, default):
         with self._lock:
             try:
-                stat = os.stat(path)
-                version = (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+                version = self.version(path)
+                if version is None:
+                    raise FileNotFoundError(path)
                 cached = self._files.get(path)
                 if cached is None or cached[0] != version:
                     with open(path, "r", encoding="utf-8") as stream:

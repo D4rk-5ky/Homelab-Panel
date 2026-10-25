@@ -1,10 +1,12 @@
 # Homelab Panel
 
+Current packaged version: **0.0.27**. Inspect it with `python3 homelab-panel/app.py --version`.
+
 Homelab Panel monitors and controls homelab devices through a Flask webpage served by Waitress and MQTT. It supports Wake-on-LAN, configured remote jobs, local shutdown/reboot controls, device history, and optional automatic Home Assistant buttons. The dashboard loads once and updates changed status/job cards through small JSON requests.
 
 - `homelab-panel/`: webpage, ping/MQTT status, jobs, history, Home Assistant discovery, plus its own `configs/` and `modules/` directories.
 - `homelab-control/`: optional agent on each remote Linux host; keeps its JSON configuration in `configs/`, its reusable shell helper in `modules/`, runs explicitly allowed scripts, and publishes status/results.
-- `shared_modules/`: generic code that is genuinely reused by both components; currently MQTT transport only.
+- `shared_modules/`: generic code that is genuinely reused by both components; MQTT transport and common CLI inspection/version handling.
 - `scripts/`: shared Linux shutdown/reboot scripts and their common helper.
 - `tests/`: regression checks for Home Assistant, command dispatch, and Paho publishing; protocol tests use localhost only.
 
@@ -21,11 +23,12 @@ The panel is intentionally split by responsibility without turning every helper 
 | `homelab-panel/modules/panel_mqtt.py` | Panel-specific MQTT behavior only: topic selection, receive cache, diagnostics, HA birth handling, control/status/job dispatch, and panel event hooks; it uses the shared `MqttClient`/publisher instead of implementing Paho transport |
 | `homelab-panel/modules/panel_home_assistant.py` | Home Assistant MQTT Discovery documents, local/remote buttons, HA availability snapshots, and per-device state payloads |
 | `homelab-panel/modules/panel_cache.py` | Thread-safe in-memory JSON and merged-job caches; state-file replacements invalidate cached data |
-| `homelab-panel/modules/panel_dashboard.py` | Shared escaped status/job HTML fragments, rebuilt only when their input changes; per-browser revision deltas |
-| `homelab-panel/static/dashboard.js` | Incremental polling/actions, connection errors, job-list scroll preservation, and hidden-tab pause |
+| `homelab-panel/modules/panel_dashboard.py` | One prepared shared status snapshot with source/deadline invalidation, escaped status cards, lazily rendered job rows, and per-browser revision deltas |
+| `homelab-panel/static/dashboard.js` | Serialized polling/older-job reads, local age/countdown labels, actions, connection errors, scroll preservation, and hidden-tab pause |
+| `shared_modules/cli.py` | Shared service CLI parsing and version reporting from root `VERSION`; inspection exits before service startup |
 | `shared_modules/mqtt.py` | The single generic MQTT implementation for both components: common `MqttClient` lifecycle/subscriptions/decoded callbacks/publish/stop behavior, auth/Last Will/reconnect setup, topic derivation, bounded one-shot publishing, and the standalone MQTT CLI |
 
-`app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. Generic MQTT transport is implemented once in root `shared_modules/mqtt.py` and is imported independently by both `homelab-panel` and `homelab-control`; neither component imports the other component's modules. The integration/action modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. Configuration keys, web routes, MQTT topics/payloads, Home Assistant entity IDs, safety allow-lists, and power-script behavior are unchanged by this layout.
+`app.py` remains the owner of persistent panel history/jobs/runtime state because those concerns are tightly coupled to status evaluation and the web views. Generic MQTT transport is implemented once in root `shared_modules/mqtt.py` and is imported independently by both `homelab-panel` and `homelab-control`; neither component imports the other component's modules. The integration/action modules receive callbacks/providers from `app.py` instead of duplicating that state. Panel configuration is loaded from `homelab-panel/configs/`; remote-agent configuration is loaded from `homelab-control/configs/`. Project-specific reusable implementations live under each component's `modules/` directory while entry points stay directly executable. The layout keeps configuration, routes, action allow-lists, and state ownership explicit.
 
 `shared_modules/` is shared infrastructure, not another service and not a place for component-specific helpers. The panel can run without Homelab Control running, and Homelab Control can run without the panel running. If you deploy only the remote agent to another machine, keep `homelab-control/` under a project root that also contains `shared_modules/` and the shared `scripts/` needed by its configured actions; you do **not** need to copy `homelab-panel/` to that machine.
 
@@ -105,7 +108,7 @@ chmod +x scripts/*.sh
 
 The active configuration locations are exact: `homelab-panel/configs/config.py`, `homelab-panel/configs/devices.py`, and (when the agent is used) `homelab-control/configs/config.json`. Other config locations are not read.
 
-Do not overwrite your active configs when upgrading. Copy relevant new options from the examples; the optional Home Assistant status-topic options have defaults when omitted. Active configs and runtime state/logs are ignored by Git and omitted from clean release packages.
+Do not overwrite your active configs when upgrading. Review all available options in the examples; Home Assistant status-topic keys are required when discovery is enabled. Active configs and runtime state/logs are ignored by Git and omitted from clean release packages.
 
 ### Start manually
 
@@ -157,26 +160,27 @@ journalctl -u homelab-controll.service -f
 
 `restart` reloads the app and its configuration. `status` shows service health. `journalctl -u UNIT` limits logs to that unit; `-f` follows new log entries. Substitute either agent service name when investigating that agent.
 
-### Upgrading an existing panel to 0.0.25
+### Replacing an existing installation
 
-1. Stop `homelab-controll.service`, replace the project source (including new `modules/`, templates, `static/dashboard.js`, and `requirements.txt`), and preserve your active `configs/` and `state/` directories.
+1. Stop `homelab-controll.service`, replace the project source (including `modules/`, templates, `static/dashboard.js`, `shared_modules/`, root `VERSION`, and `requirements.txt`), and preserve your active `configs/` and `state/` directories.
 2. Install `python3-waitress` alongside the existing Flask/Paho system packages, or install `requirements.txt` into your panel venv. Use the same Python environment as your panel service.
 3. Point the panel unit's `ExecStart` to the Python environment containing those packages and to the current `homelab-panel/app.py`. Keep the full project layout and your actual `User`/`Group`/paths.
 4. Run `sudo systemctl daemon-reload` and `sudo systemctl restart homelab-controll.service`. Reload the dashboard once to load the new JavaScript.
 
-Existing active config files need no new keys. `PAGE_REFRESH_SECONDS` now controls partial updates instead of full reloads. Continue using one panel instance; the remote agents require no configuration or protocol changes.
+`PAGE_REFRESH_SECONDS` controls partial dashboard updates. Run one panel instance. Keep the root `VERSION` file with both full and agent-only installations so all entry points can report the packaged version.
 
 ### Dashboard and memory caching
 
-- Initial navigation renders the page shell, username, and that browser's flash messages. Subsequent status updates fetch `GET /api/dashboard` and replace only changed status/job fragments. Navigation/login/logout still use ordinary pages.
-- Web requests never ping a device. The background monitor owns measurements; missing or expired measurements show an unknown/stale status instead of triggering work in a request or leaving the device green. MQTT broker loss and MQTT TTL expiry are reflected using current in-memory MQTT state.
-- Shared card fragments are rendered lazily on first use, kept in RAM, and rebuilt only when their device/status/job inputs change. Runtime JSON is parsed once per file version; atomic saves, external edits, deletion and malformed data are detected. Merged remote/panel jobs are decoded and sorted again only after source changes. Time-dependent job timeout views still advance on polling.
-- Each tab sends its own revision cursor. Unchanged responses contain metadata and an empty `devices` object; changed responses contain only changed fragments. A process-instance token forces a fresh snapshot after a server restart.
-- Commands submit once using `fetch`, display their result only in the initiating browser, and refresh its cards without reloading the page. Confirmation prompts remain in place. Ordinary POST/redirect/flash handling still works without JavaScript; without JavaScript, refresh status manually.
-- No username, session cookie, login response, or flash/result message is put in a shared fragment cache. Dynamic responses use `Cache-Control: private, no-store` and `Vary: Cookie`; JSON requests return `401` on session expiry and the browser returns to login.
-- Polling requests do not overlap, use a timeout, retry after connection failures, and pause while the tab is hidden. Existing displayed data is marked as unrefreshed during a connection failure. Commands are never automatically retried.
+- Initial navigation renders the page shell, username, that browser’s flash messages, status cards, and the newest `DASHBOARD_JOB_PAGE_SIZE` jobs per device (default five). Older jobs are fetched when you scroll down, use the keyboard at the bottom, or press **Vis ældre jobs**. The list keeps its position and focus when updated. Without JavaScript, use **Vis alle bevarede jobs** to open `/?jobs=all` and refresh manually.
+- One prepared dashboard snapshot is shared across tabs and users. A request checks inexpensive source versions, then reuses the snapshot if MQTT, measurements, provisional actions, WoL activity, configuration and runtime/job files have not changed. A rebuild loads the runtime file once and the job file once for all devices. Unchanged requests avoid repeating status construction, JSON copying, job evaluation and HTML rendering.
+- The server rebuilds expired views at the next request: MQTT freshness, stopped-monitor detection and active job deadlines remain authoritative even without new messages. A backwards server wall-clock step also invalidates the snapshot. Web requests never ping devices; the existing background monitor owns measurements.
+- MQTT age and active-job countdown labels tick locally once per second using server time plus monotonic browser elapsed time. Clock ticks do not request or replace cards. Reaching zero does not mark a job successful or cancel it; the next server update supplies its authoritative status. Browser clocks do not extend MQTT freshness or a job deadline.
+- Shared escaped status HTML and requested job rows stay in RAM. Rows are rendered only when requested and reused across window sizes. The row cache is bounded by current devices and `PANEL_JOB_MAX_ENTRIES`; loading older rows does not discard stored jobs/history or create a separate cache per browser.
+- Each tab keeps its own revision and loaded-job count. Global polls and older-job reads share one non-overlapping request queue, use a timeout, and pause while hidden. A one-device response does not advance the global cursor. After restart, the process-instance token forces fresh cards. Failed older-job reads can be retried using the button.
+- Commands submit once, keep browser confirmation prompts, and display results only in the initiating browser. Ordinary POST/redirect/flash remains available without JavaScript. Commands are never automatically retried. Login/username/session/flash data stays outside shared caches; dynamic responses are private/no-store and JSON requests return `401` when login is required.
+- Full incoming MQTT telemetry logging is optional through `MQTT_CONFIG["log_payloads"]`, default `False`. Errors, broker connection changes, and action results still log normally. Enable payload logging for diagnosis when needed; jobs/history payloads can be large.
 
-Caches are process-local and reset on restart. This trades a small bounded set of shared in-memory data for less parsing, sorting, rendering, network traffic, and browser work. No RAM or CPU saving is guaranteed for your hardware without measurement.
+Caches are process-local and reset on restart. There is no extra service or periodic cache-rebuild thread. Cache work happens when needed, which keeps idle work low on a single-core host. Actual Pi CPU/RAM and response-time gains depend on your workload.
 
 ## Panel configuration: `homelab-panel/configs/config.py`
 
@@ -189,7 +193,8 @@ Caches are process-local and reset on restart. This trades a small bounded set o
 | `STATUS_MONITOR_INTERVAL_SECONDS` | Integer, `10`, minimum `2` | Delay between background status-monitor passes |
 | `PAGE_REFRESH_SECONDS` | Integer, `15`, minimum `1` | Interval between incremental JSON updates; hidden tabs pause polling |
 | `PANEL_HISTORY_MAX_ENTRIES` | Integer, example `500`, minimum `1` | Maximum persisted panel events per device |
-| `PANEL_JOB_MAX_ENTRIES` | Integer, `100`, minimum `1` | Maximum persisted/displayed panel jobs per device |
+| `PANEL_JOB_MAX_ENTRIES` | Integer, `100`, minimum `1` | Maximum retained/available panel jobs per device; independent of the initial visible batch |
+| `DASHBOARD_JOB_PAGE_SIZE` | Optional integer, `5`, minimum `1`, capped by `PANEL_JOB_MAX_ENTRIES` | Initial job count per device and each older-job loading step; does not change storage/history retention |
 
 ### `MQTT_CONFIG`
 
@@ -197,12 +202,14 @@ Caches are process-local and reset on restart. This trades a small bounded set o
 |---|---|---|
 | `host` | String, `"192.168.1.10"` | Broker hostname/IP |
 | `port` | Integer, `1883` | Broker port |
+| `keepalive` | Integer, `60` | Keepalive seconds for the long-running panel MQTT connection; one-shot publication uses fixed `60` |
 | `user` | String, `""` | Broker username; empty skips username authentication |
 | `pass` | String, `""` | Broker password |
 | `qos` | Integer, `0`, `1`, or `2` | QoS for commands sent by the shared Paho publisher |
 | `retain` | Boolean, `False` | Retention for forwarded remote commands; keep **False** to avoid replaying a power command |
 | `client_id_panel_status` | String, `"homelab-panel-status"` | MQTT subscriber client ID; use a unique ID per running client |
 | `panel_control_topic` | String, `"homelab-panel/control"` | JSON command input used by HA buttons; empty disables this input and button discovery |
+| `log_payloads` | Optional boolean, `False` | Print full incoming panel MQTT telemetry when True; error, connection and action logs remain enabled independently |
 
 Use broker ACLs to restrict who can publish to control topics. Website login does not authenticate MQTT clients. Incoming retained messages on the **panel** control topic are rejected. The separate remote agent does not currently reject retained commands, so never retain commands sent directly to its control topic either.
 
@@ -386,16 +393,33 @@ The panel and agent each maintain their own allow-list. MQTT text is never execu
 
 ### Application CLI
 
-The three long-running Python applications have **no CLI argument parser**. Run them as shown above. Their `--help` is not implemented and must not be treated as a safe dry run: they can start normal work despite extra arguments. The power action scripts also have no `--help`, dry-run, or configurable-delay option.
+All eight operator entry points support safe `-h` / `--help` and `--version`:
 
-The shared `shared_modules/mqtt.py` module is also the standalone publishing helper. Its CLI supports the flags below and has a safe `--help`; it publishes only and does not launch either application service.
+```bash
+python3 homelab-panel/app.py --help
+python3 homelab-panel/app.py --version
+python3 homelab-control/homelab_control_command_listener.py --help
+python3 homelab-control/homelab_control_status_indicator.py --help
+python3 shared_modules/mqtt.py --help
+bash scripts/shutdown_delay.sh --help
+bash scripts/shutdown_cancel.sh --help
+bash scripts/reboot_delay.sh --help
+bash scripts/reboot_cancel.sh --help
+```
+
+Use `--version` on any listed entry point to print its program name and the version from root `VERSION`, then exit `0`. Help explains each program and flag without starting services or power operations. The three service programs accept only help/version; no arguments starts normal work, and unsupported arguments exit `2` before loading private configuration or runtime dependencies. Runtime settings come from the configuration files. Their import behavior still starts the panel's MQTT/status runtime; import is not an inspection command.
+
+The four power scripts accept only help/version as a single argument; unsupported or extra arguments exit `2` before reading agent configuration, checking privileges, writing state, or invoking power commands. **No arguments performs the configured power operation.** There is no dry-run or configurable-delay flag. The two shell library files are sourced implementation helpers, not operator CLI entry points.
+
+The shared `shared_modules/mqtt.py` module is the standalone publisher. It additionally accepts the publishing flags documented below; its help/version still requires the installed Paho dependency, but reads no private config/stdin and does not connect to MQTT.
 
 ### Web routes
 
 | Method / route | Purpose |
 |---|---|
-| `GET /` | Dashboard shell, initial shared cards, private username/messages, and action buttons |
-| `GET /api/dashboard` | Changed shared status/job fragments as JSON; optional `since` revision plus `instance` token |
+| `GET /` | Dashboard shell, newest job batch, shared status cards, private username/messages, and action buttons; `?jobs=all` displays all retained jobs |
+| `GET /api/dashboard` | Changed shared status/job windows as JSON; optional `since` revision, `instance` token and `jobs` JSON map of device IDs to loaded counts |
+| `GET /api/jobs/<device_id>?limit=N` | Current newest-first prefix of N jobs for one device; N must be an integer from 1 to `PANEL_JOB_MAX_ENTRIES` |
 | `GET/POST /login` | Show login / submit username and password |
 | `POST /logout` | Clear the login session |
 | `GET /history/<device_id>` | Event timeline; `?filter=all`, `errors`, or a category selects events |
@@ -405,6 +429,8 @@ The shared `shared_modules/mqtt.py` module is also the standalone publishing hel
 | `POST /mqtt/<device_id>/<button_id>` | Run a configured remote button |
 | `POST /local/<button_id>` | Run a configured panel-host button |
 
+Dashboard/older-job responses contain `instance`, `revision`, `devices`, `updated_at`, and `server_epoch` (Unix seconds used for browser clocks). Each returned job window includes escaped `jobs` HTML, `jobs_total`, and `jobs_limit`. An unchanged global poll has an empty `devices` object. For example, URL-encode `jobs={"aoostar_wtr":10}` to keep ten already-loaded jobs current. Invalid job-window input returns `400`; an unknown device on the older-job route returns `404`. Both endpoints require the normal login session when enabled, return `401` JSON for unauthenticated access, and never run actions. A one-device response’s revision must not advance a client’s global polling cursor because other devices may also have changed.
+
 Action routes return `{ "ok": true/false, "message": "..." }` for `Accept: application/json`; ordinary forms retain redirect/flash behavior. When `WEB_AUTH_CONFIG.enabled=True`, web pages, JSON updates, and actions require an authenticated Flask session. MQTT access is controlled separately by broker authentication and ACLs.
 
 ### Panel MQTT control
@@ -412,9 +438,9 @@ Action routes return `{ "ok": true/false, "message": "..." }` for `Accept: appli
 Send non-retained JSON to `MQTT_CONFIG["panel_control_topic"]`:
 
 ```json
-{"device_id":"aoostar_wtr","command":"power_on"}
-{"device_id":"aoostar_wtr","command":"cancel_wol"}
-{"device_id":"aoostar_wtr","command":"run_watchtower"}
+{"target":"remote","device_id":"aoostar_wtr","command":"power_on"}
+{"target":"remote","device_id":"aoostar_wtr","command":"cancel_wol"}
+{"target":"remote","device_id":"aoostar_wtr","command":"run_watchtower"}
 {"target":"local","command":"shutdown_cancel"}
 ```
 
@@ -444,7 +470,7 @@ The agent's `topics.control_power` accepts only the current JSON job envelope:
 
 ### Command flag reference
 
-The only project entry point with an argument parser is the one-shot publisher:
+The one-shot publisher exposes the complete publishing interface:
 
 ```bash
 python3 shared_modules/mqtt.py --help
@@ -455,6 +481,7 @@ python3 shared_modules/mqtt.py --help
 | Publisher flag | Value / required / default | What it does | Example / safety notes |
 |---|---|---|---|
 | `-h`, `--help` | No value; optional | Prints the complete CLI help and exits with status `0` | Safe inspection mode; no MQTT or payload work is started |
+| `--version` | No value; optional | Prints program name and root `VERSION`, then exits `0` | Does not require publishing flags or read config/stdin |
 | `--config PATH` | Path string; required for normal CLI mode; mutually exclusive with `--request-stdin` | Opens JSON at `PATH` and reads its required top-level `mqtt` object for host/port/credentials | `--config homelab-control/configs/config.json`; credentials stay in the file rather than argv |
 | `--request-stdin` | Boolean flag; **internal only**; mutually exclusive with `--config` | Reads one complete JSON worker request from stdin and prints JSON `[success, message]` | Used by `publish_message()` so a parent process can enforce a hard timeout. Do not use this as the normal manual interface. |
 | `--topic TOPIC` | String; required with `--config` | Selects one exact MQTT destination. Empty topics and `+` / `#` wildcard topics are rejected before connecting. | `--topic homelab-panel/control`; the message body itself still comes from stdin |
@@ -521,7 +548,7 @@ Run action scripts by their path only when you intend the power operation. When 
 
 ## Status, jobs, and history
 
-The dashboard lists each device’s newest jobs first. Each list shows approximately five job cards at a time; scroll within it for older jobs, up to `PANEL_JOB_MAX_ENTRIES`. Keyboard users can focus the list with Tab and scroll with arrow/Page Up/Page Down keys. Each device’s scroll position is saved in browser session storage across automatic refreshes when that storage is available.
+The dashboard lists each device’s newest jobs first. Each list shows approximately five job cards at a time. It initially loads `DASHBOARD_JOB_PAGE_SIZE` jobs and fetches older batches as needed, up to `PANEL_JOB_MAX_ENTRIES`. Keyboard users can focus the list with Tab and scroll with arrow/Page Up/Page Down keys; Down, Page Down or End at the bottom can load the next batch, and the older-jobs button is also keyboard accessible. Incremental updates preserve each list element, focus, and scroll anchor in the current page; scroll position is not stored across a full page reload.
 
 - Ping and MQTT are evaluated independently. Both online gives `Online`; one alone gives `Ikke fuldt online`; neither gives `Offline`.
 - MQTT online/offline confirmation needs a connected broker and a recent power status. Broker loss invalidates cached online status during evaluation.
@@ -579,7 +606,7 @@ The author takes **no responsibility or liability** for any data loss, service d
 Before running it in production, you **must**:
 
 - Read the entire source code
-- Understand exactly what it does (and what it does _not_ do)
+- Understand exactly what it does (and what it does *not* do)
 - Review and adapt it to your own environment
 - Test it carefully in a non‑production setup
 
@@ -597,4 +624,4 @@ This project is AI-assisted / vibe-coded software created as a hobby project. It
 
 You are responsible for reviewing the code, testing it in a safe environment, making backups, and understanding what it does before using it on real data. The author is not responsible for damage, data loss, broken systems, security issues, or other problems caused by using this software.
 
-----
+---
