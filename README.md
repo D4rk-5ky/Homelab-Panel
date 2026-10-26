@@ -1,6 +1,6 @@
 # Homelab Panel
 
-Current packaged version: **0.0.27**. Inspect it with `python3 homelab-panel/app.py --version`.
+Current packaged version: **0.0.28**. Inspect it with `python3 homelab-panel/app.py --version`.
 
 Homelab Panel monitors and controls homelab devices through a Flask webpage served by Waitress and MQTT. It supports Wake-on-LAN, configured remote jobs, local shutdown/reboot controls, device history, and optional automatic Home Assistant buttons. The dashboard loads once and updates changed status/job cards through small JSON requests.
 
@@ -22,7 +22,8 @@ The panel is intentionally split by responsibility without turning every helper 
 | `homelab-panel/modules/panel_actions.py` | Local script execution guards, Wake-on-LAN retry/cancel mechanics, shutdown/reboot confirmation, and configured remote action dispatch |
 | `homelab-panel/modules/panel_mqtt.py` | Panel-specific MQTT behavior only: topic selection, receive cache, diagnostics, HA birth handling, control/status/job dispatch, and panel event hooks; it uses the shared `MqttClient`/publisher instead of implementing Paho transport |
 | `homelab-panel/modules/panel_home_assistant.py` | Home Assistant MQTT Discovery documents, local/remote buttons, HA availability snapshots, and per-device state payloads |
-| `homelab-panel/modules/panel_cache.py` | Thread-safe in-memory JSON and merged-job caches; state-file replacements invalidate cached data |
+| `homelab-panel/modules/panel_cache.py` | Thread-safe JSON cache with LRU/file/source-byte bounds, plus merged-job caches; state-file replacements invalidate cached data |
+| `homelab-panel/modules/panel_server.py` | Validates the supported Waitress settings before background workers start |
 | `homelab-panel/modules/panel_dashboard.py` | One prepared shared status snapshot with source/deadline invalidation, escaped status cards, lazily rendered job rows, and per-browser revision deltas |
 | `homelab-panel/static/dashboard.js` | Serialized polling/older-job reads, local age/countdown labels, actions, connection errors, scroll preservation, and hidden-tab pause |
 | `shared_modules/cli.py` | Shared service CLI parsing and version reporting from root `VERSION`; inspection exits before service startup |
@@ -108,7 +109,7 @@ chmod +x scripts/*.sh
 
 The active configuration locations are exact: `homelab-panel/configs/config.py`, `homelab-panel/configs/devices.py`, and (when the agent is used) `homelab-control/configs/config.json`. Other config locations are not read.
 
-Do not overwrite your active configs when upgrading. Review all available options in the examples; Home Assistant status-topic keys are required when discovery is enabled. Active configs and runtime state/logs are ignored by Git and omitted from clean release packages.
+The optional `WEB_SERVER_CONFIG` and `STATE_CACHE_CONFIG` dictionaries may be omitted from existing active configs; the documented defaults apply. Do not overwrite your active configs when upgrading. Review all available options in the examples; Home Assistant status-topic keys are required when discovery is enabled. Active configs and runtime state/logs are ignored by Git and omitted from clean release packages.
 
 ### Start manually
 
@@ -117,7 +118,7 @@ cd homelab-panel
 python3 app.py
 ```
 
-The panel listens on `http://HOST:5000/` (bind address `0.0.0.0`, port `5000`). The entry point starts Waitress with one process and four request threads; bind address, port, and thread count are fixed there, not app CLI options. The panel starts its MQTT listener and status monitor even when imported, so run exactly one panel process. Do not use multiple Gunicorn workers, Gunicorn `--preload`, or a development reloader with this startup lifecycle.
+By default the panel listens on `http://HOST:5000/` (bind address `0.0.0.0`, port `5000`). The entry point starts Waitress with one process and two request threads by default. Optional `WEB_SERVER_CONFIG` sets its bind address, port, threads, connection limit, backlog and inactive-connection cleanup. These are configuration keys, not app CLI flags. The panel starts its MQTT listener and status monitor even when imported, so run exactly one panel process. Do not use multiple Gunicorn workers, Gunicorn `--preload`, or a development reloader with this startup lifecycle.
 
 On a remote Linux host, run each agent in its own terminal, from the project root:
 
@@ -182,7 +183,46 @@ journalctl -u homelab-controll.service -f
 
 Caches are process-local and reset on restart. There is no extra service or periodic cache-rebuild thread. Cache work happens when needed, which keeps idle work low on a single-core host. Actual Pi CPU/RAM and response-time gains depend on your workload.
 
+
+### Raspberry Pi Zero W tuning
+
+Start with the defaults: one Waitress process, two request threads, a 10-second monitor interval, a 15-second dashboard update interval, and five initially loaded jobs per device. More threads can help overlapping I/O waits; they do not add CPU cores. If slow command requests delay polling, try `WEB_SERVER_CONFIG["threads"] = 4` and compare response time and memory under your workload. Keep the monitor and MQTT TTL suitable for your device availability requirements.
+
+Cache reuse happens inside the existing application. No Apache, Redis, Flask-Caching, container or OS change is needed. The bounded JSON cache avoids repeated decoding; shared prepared views and escaped card/job fragments avoid rebuilding unchanged browser responses. Login sessions, flashes and action responses remain private and uncached. WoL and shutdown/reboot confirmation continue to probe devices directly.
+
+Repeated identical runtime fields, including retained boot IDs, skip the atomic disk write. Actual changes are still written immediately; there is no delayed flush or write-behind data-loss window. History and jobs retain their existing persistence behavior.
+
+Alpine Linux is an optional operating system choice, not an application cache. It does not automatically make Python requests faster. If you choose Alpine on the original Zero W, use its Raspberry Pi **armhf** image and check dependencies for that board. The bundled services require systemd; Alpine's normal OpenRC installation needs a separately adapted service setup. Keep the current OS initially when comparing application resource usage. See [Alpine Raspberry Pi compatibility](https://wiki.alpinelinux.org/wiki/Raspberry_Pi).
+
 ## Panel configuration: `homelab-panel/configs/config.py`
+
+### Waitress settings: `WEB_SERVER_CONFIG`
+
+Every key is optional; omitted keys use the defaults below. Restart the panel after editing. Unknown keys and invalid types fail before workers start. Numeric values must be positive integers (not strings, floats or booleans).
+
+| Key | Default | What it controls |
+|---|---|---|
+| `host` | `"0.0.0.0"` | Nonempty bind address/hostname. Use `"127.0.0.1"` when a local reverse proxy is the only intended entry point. |
+| `port` | `5000` | TCP listening port, 1–65535. Update your browser URL if changed. |
+| `threads` | `2` | Request worker threads within one process; increase for overlapping I/O waits if measured useful. |
+| `connection_limit` | `32` | Limit on active Waitress channels, distinct from worker threads. Excess connections wait in the backlog; this does not preallocate 32 channels. |
+| `backlog` | `64` | OS listen queue for pending TCP connections, subject to OS limits. |
+| `channel_timeout` | `30` | Seconds without socket send/receive activity before a connection is eligible for cleanup. This is not a Python request execution timeout or a power/job deadline. |
+| `cleanup_interval` | `5` | Seconds between inactive-channel cleanup checks; cleanup can occur after the timeout by up to a cleanup interval. |
+
+For example, `WEB_SERVER_CONFIG = {"host": "127.0.0.1", "port": 8080, "threads": 4}` overrides only those three defaults. This is the panel's supported subset of Waitress options. All other Waitress settings, including its proxy-header trust and buffering behavior, retain library defaults. See [Waitress argument meanings](https://docs.pylonsproject.org/projects/waitress/en/stable/arguments.html).
+
+### JSON cache settings: `STATE_CACHE_CONFIG`
+
+| Key | Default | What it controls |
+|---|---|---|
+| `enabled` | `True` | Boolean. `False` rereads JSON when requested, for diagnosis; prepared views, merged jobs and HTML caches remain active. |
+| `max_files` | `3` | Positive integer limit on cached decoded JSON files, using least-recently-used eviction. The panel normally reads runtime, jobs and history. |
+| `max_bytes` | `2097152` | Positive integer combined source-file size budget in bytes (2 MiB). This is not a limit on decoded Python RAM or the complete process. |
+
+A file exceeding `max_bytes` still loads normally but is not retained in this decoded-file cache. Eviction removes only memory entries; it never deletes or trims a file. File device/inode/mtime/ctime/size changes invalidate old entries, including atomic replacements and external edits. Missing/corrupt files release their cache entries and use the existing empty-state fallback. Open-file metadata is checked before/after decoding; a file changed in place while read is not cached. Returned cached objects are deep copies so callers cannot mutate shared data.
+
+Keep `PANEL_HISTORY_MAX_ENTRIES` and `PANEL_JOB_MAX_ENTRIES` appropriate to your RAM and storage. Their storage limits and the dashboard's device/job bounds remain independent of the JSON source budget. There is no whole-process memory cap. Configuration typos are startup errors; there is no generic cache or Waitress option pass-through.
 
 ### General settings
 

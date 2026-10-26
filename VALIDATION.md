@@ -1,80 +1,148 @@
-# Homelab Panel 0.0.27 — validation
+# Homelab Panel 0.0.28 — validation
 
-Validated on 2026-10-25. The source baseline is the delivered `Homelab-Panel-0.0.26.zip`; preservation is also checked against the user's original `Homelab-Panel-0.0.25.zip`. Version advances exactly 0.0.26 → 0.0.27, with the 0.0.99 → 0.1.0 rollover policy retained.
+Prepared 2026-10-26 from the user's replacement archive `Homelab-Panel-main.zip`,
+version 0.0.27, SHA-256
+`dada65152861f608f74f284771a4327a1423fa690ef267ca203d4bbef86b25ac`.
+The earlier `Homelab-Panel-Homelab-Panel-Next.zip` is not the release baseline.
+Version advances once, **0.0.27 → 0.0.28**, following 0.0.99 → 0.1.0 rollover.
 
-## Implemented behavior
+## Inspection and preservation
 
-1. **One prepared dashboard snapshot.** The existing dashboard cache now shares prepared device/job views across browsers. MQTT revision/connectivity, ping measurements, provisional actions, WoL activity, device/settings changes and runtime/job file identities invalidate the view. MQTT freshness, stale-monitor and all active-job deadlines also invalidate it without new messages. Wall-clock sampling occurs under the preparation lock, so overlapping requests are not mistaken for clock rewinds. Actual backwards clock steps force reevaluation.
-2. **Batched cached-state reads.** A rebuild loads runtime JSON once, jobs JSON once and MQTT receive metadata once for all devices. Unchanged requests check file identity but avoid repeated file-cache loads/deep copies, status construction, job evaluation and rendering. Existing helper functions receive optional batch inputs; direct monitor/HA callers retain their live defaults.
-3. **Browser elapsed-time labels.** Stable receive/deadline epochs replace changing age/countdown text in shared sources. One visible-tab clock interval updates text using server time plus monotonic elapsed browser time. Server freshness and timeout classification remain authoritative; countdown zero never claims success or changes stored jobs.
-4. **Older jobs loaded on demand.** Default initial batch is five per device. Button, wheel, scroll and keyboard demand expand a current newest-first prefix through authenticated GET `/api/jobs/<device_id>?limit=N`. A scroll-for-more sentinel makes an exactly fitting first batch scrollable. Expanded windows stay current on global polls. Requests are serialized, and a partial device response cannot advance the global cursor. Row HTML is cached once per current retained row, not once per browser/window. Full storage/history retention is preserved. `/?jobs=all` supplies the no-JavaScript path to every retained job.
-5. **Optional payload logging.** `MQTT_CONFIG.log_payloads` defaults to False, suppressing full incoming panel telemetry printing. Connection, rejection/error and action-result logging remains. Routing, receive-state updates and control safety are unchanged.
+The archive was inventoried before editing. Runtime Python, shared MQTT/CLI,
+configuration examples, Bash power/status helpers, service units, templates,
+dashboard JavaScript, tests, README, existing code map, validation and version
+history were reviewed. Existing Waitress and prepared/dashboard/JSON/job caches
+were reused. No original file is removed or renamed. All supplied Unix permission
+bits and the complete prior version history are preserved. The archive specifies
+0755 for ten executable files and no Unix mode for 34 other files; those regular
+files are packaged as 0644.
 
-`DASHBOARD_JOB_PAGE_SIZE` is optional in existing active configs, default 5, minimum 1, capped by `PANEL_JOB_MAX_ENTRIES`. Config examples and current-use README document both new options, routes, query values and clock behavior. Both supplied disclaimer bodies, full version history, all original files and permission metadata are preserved. No runtime dependency, additional service, new cache process or periodic rebuild worker is introduced.
+Action manager, Home Assistant and MQTT integrations, dashboard preparation,
+shared MQTT transport/CLI, both remote-agent programs, remote shell library,
+all power scripts, device and remote-agent config examples remain byte-identical
+to the uploaded baseline. Only the panel unit's thread comment changes; its
+ExecStart, user, group and deployment paths remain intact. Live power probes,
+command allow-lists, script containment/executable guards, browser confirmations,
+MQTT retention behavior, session/private-response behavior, job deadlines and
+history/job retention are preserved.
 
-## Python regressions
+## Changes verified
 
-Environment: Python 3.14.4, Flask 3.1.3, Paho MQTT 2.1.0, Waitress 3.0.2.
+- Optional WEB_SERVER_CONFIG defaults: host 0.0.0.0, port 5000, two threads,
+  32 active channels, backlog 64, 30-second inactivity timeout, 5-second cleanup
+  checks. Config is validated before workers start. Existing configs can omit it.
+  Port/thread/channel settings are configuration keys, not app CLI flags.
+- PanelJsonCache now has LRU eviction, a three-file limit and a combined 2 MiB
+  source-file budget by default. Oversized files remain readable but uncached.
+  Disabled/unstable reads are not retained; corrupt/deleted sources release old
+  entries and accounting. Cache copies remain isolated across request threads.
+  Source bytes are not decoded Python heap size or a total process memory cap.
+- Repeated identical runtime field updates skip atomic writes and unnecessary
+  dashboard invalidation. Real/new values still persist immediately through
+  existing atomic writers. There is no deferred flush; history/job writes retain
+  their existing behavior.
+- Current-use README, config example and code map cover every new option/function.
+  Both supplied disclaimer bodies remain as written, with Homelab Panel links.
+  VERSIONING.md records all release changes. An identical lowercase versioning.md
+  is included in the archive to satisfy both requested filename spellings.
+
+## Python regression results
+
+Environment: macOS, Python **3.12.14**, Flask **3.1.3**, Paho MQTT **2.1.0**,
+Waitress **3.0.2**, with dependencies isolated outside the release tree.
 
 ```bash
 python3 -B -m unittest discover -s tests -v
 ```
 
-**56 tests pass, no skips.** Existing action/auth/HA/retained-control/path checks, dashboard isolation/escaping, CLI safety, Waitress startup and real Paho localhost wire exchanges remain covered. New checks exercise:
+**66 tests pass, no skips.** The original 56 tests remain, plus 10 Pi runtime
+checks. New tests verify LRU count/source-byte budgets, oversized/disabled bypass,
+corruption/deletion/growth, one cold parse across concurrent readers, independent
+returned objects, skipped identical updates, durable real updates, invalid settings,
+configured direct startup and older configs missing optional dictionaries.
 
-- exactly two cold source loads and zero warm loads/status builds/timeout evaluations/renders across two browser clients;
-- no clock-only invalidation, exact job expiry, integer-second MQTT TTL boundary, stale-monitor expiry and backwards-clock reevaluation;
-- runtime/MQTT/action/WoL/config changes and external file replacement/corruption/deletion;
-- initial five of 100 jobs, lazy additional row rendering/reuse, independent expanded windows, bounded row cache, full no-JavaScript access and unchanged retained data;
-- inserted/reordered jobs, expanded-window updates and deadlines of jobs outside the initial visible batch;
-- protected read-only pagination, private response headers, input limits and HTML escaping;
-- configurable initial batch independent of retention, and an active-config fixture omitting the new optional key;
-- absent/False/True payload logging while receive-state and error/connection handling continue;
-- six concurrent readers producing one preparation build.
+Existing regressions cover auth/session/flash isolation, escaping, retained panel
+control rejection, local/remote dispatch and path guards, state/job deadlines,
+MQTT TTL and broker loss, cache invalidation, demand-loaded jobs, concurrent
+preparation, CLI inspection, root/sudo action argv, and no automatic command retry.
+Paho wire tests exercise actual QoS 0/1/2, auth/payload/retain bytes, rejected
+connections and missing acknowledgements against a temporary 127.0.0.1 peer.
+Power operations are stubbed; no real shutdown/reboot/WoL is performed.
 
-Paho protocol checks contact a temporary localhost peer only, covering exact payload/auth/QoS/retain flags, rejected connections and missing acknowledgements. Power-script checks use stubs; no real device command runs.
+Baseline comparison: the untouched uploaded project runs 56 tests with one failure
+on this macOS host. Its local-action test expects `/var/...` while production
+correctly resolves `/private/var/...`. The release test fixture now resolves its
+expected path; production guards are unchanged. A first sandboxed run also denied
+localhost socket binding; the comparable baseline and passing release run used
+approved localhost access. These are recorded environmental/test-fixture findings,
+not changes to remote command safety.
 
-## Chromium / Waitress end-to-end check
+## Browser and Waitress
 
-`tests/dashboard_browser.cjs` passes with Playwright, Chromium headless shell 151.0.7922.34 and a real Waitress localhost fixture. Device probes, MQTT connections and power actions are mocked.
+The existing Playwright browser regression passes with installed Google Chrome
+and a real localhost Waitress fixture. It first passed using the original fixture's
+four threads. The fixture was then updated to apply WEB_SERVER_OPTIONS with only
+localhost/ephemeral-port overrides, and is verified with the release's two-thread
+server settings. An initial configured run failed the original fixed 1.2-second
+countdown wait. The fixture now brings the tested page forward, waits up to seven
+seconds for an observed clock tick, and uses a 10-second test-only job deadline.
+The rerun passes; production JavaScript and job deadlines are unchanged. Device,
+broker and power I/O remain mocked.
 
-Verified login/session expiry, independent private results, compact deltas, no full navigation on updates/actions, escaping, confirmation cancellation, focus/scroll preservation, connection failure/recovery, hidden-tab pause/resume, restart reset and a 390-pixel viewport without horizontal overflow.
+The scenario checks login/session expiry, independent private results, compact
+deltas without navigation, XSS escaping, cancelled confirmations, focus/scroll
+preservation, network failure/recovery, hidden-tab pause/resume, instance resets,
+mobile layout, older-job button/wheel/keyboard loading, failed-read retry,
+serialized reads, local clocks and authoritative job timeout.
 
-Additional checks verify initial batching, older-job button loading, real wheel scrolling from an exactly fitting initial list, subsequent scrolling and keyboard expansion, failed-read retry, a queued older-job request behind a delayed global poll with at most one read in flight, age/countdown ticks without replacing their cached nodes, and server timeout classification. Test-only routes are confined to the browser fixture process. Browser dependencies/downloads are outside the release tree.
+## Static, CLI and documentation checks
 
-## Reproducible local workload comparison
+- 21 Python files compile in memory; no bytecode is written into the project.
+- Six Bash files pass `bash -n`; three quoted shell-embedded Python blocks and
+  the browser's embedded Python fixture compile.
+- Both JavaScript files pass `node --check`; all six Jinja templates parse.
+- JSON examples parse. All panel config constants and dictionary options appear
+  in README; device/agent examples are preserved unchanged.
+- All 278 Python/shell function definitions are represented by name in the code
+  map, including nested functions; JavaScript functions and external commands
+  remain explained in its existing browser/command sections.
+- 24 information-only invocations pass: eight operator entry points each with
+  `-h`, `--help` and `--version`, from an unrelated temporary directory. All version
+  output reports 0.0.28. Service inspection also passes with Python site packages
+  disabled. Existing regressions verify unsupported-argument rejection and power
+  inspection before privileged/config/state work.
+- Three systemd files were statically inspected. They were not installed or run.
 
-Same isolated fixture for each version: three devices, 100 completed retained jobs per device, fixed clock, mocked device/network work. Sizes are uncompressed HTML/JSON bytes, not Pi timing measurements.
+## Packaging verification
 
-| Measurement | 0.0.26 | 0.0.27 |
-|---|---:|---:|
-| Initial dashboard HTML | 73,629 bytes | 15,782 bytes |
-| Initially rendered job rows | 300 | 15 |
-| Runtime cache loads per unchanged poll | 6 | 0 |
-| Jobs cache loads per unchanged poll | 3 | 0 |
-| Status fragments changed after 15 seconds, no source changes | 1 | 0 |
-| Unchanged JSON response | 109 bytes | 143 bytes |
+The release ZIP contains the full project beneath Homelab-Panel-0.0.28/.
+Original/final SHA-256 and Unix modes, additions/changes/omissions and the original
+archive checksum are recorded in the supplied external release manifest. All 44
+original file paths are retained; the two new code/test files and documentation
+mirror are included. The archive therefore has 47 files.
 
-The initial fixture HTML is about **79% smaller**. The unchanged response gains server clock metadata; both versions send no card HTML when unchanged. Warm requests still perform two file-identity checks so external edits are detected; zero cache loads does not mean zero filesystem metadata checks. These results establish reduced work/payload, not a measured speedup or RAM saving on the Pi.
+Checks include CRC, unique safe paths, no symlinks, original-path preservation,
+archive/tree byte and mode identity, deliberate identical VERSIONING.md/versioning.md
+contents, clean extraction, compilation and version reporting. The two versioning
+spellings are intentional; they refer to one file on case-insensitive filesystems.
+No bytecode, __pycache__, .pyo, virtualenvs, build/test caches, temporary files,
+runtime logs/state, active private configs, dependencies or browser downloads
+are included. The original archives remain untouched.
 
-## Static, CLI, documentation and safety checks
+## Limits
 
-- All **19 Python files** compile in memory, **6 shell files** pass `bash -n`, and **4 embedded Python blocks** compile.
-- Both JavaScript files pass `node --check` with Node 24.22.1.
-- **24 help/version checks**: all eight operator entry points × `-h`, `--help`, `--version`, invoked from `/tmp`; all succeed and version commands expose 0.0.27.
-- JSON examples parse; every example option key/constant appears in README. The code map explains all **262 Python/shell function definitions** by name, plus browser functions/callbacks and embedded fixture commands.
-- Existing full version history is preserved; README remains a current-use guide and includes both supplied disclaimer bodies with project-local links.
-- Three systemd examples pass static section/directive checks. Root-agent code, shared MQTT transport/CLI helper, power scripts, action manager, HA integration, service units, requirements and unaffected config examples remain byte-identical to 0.0.26.
-- Eight original/release configured-root power-script success/failure comparisons match event order, exact argv, output and return code using stubs. Authentication, non-retained panel control, action allow-lists, executable/path guards, one-minute power behavior and server deadline checks are preserved.
+No actual Pi Zero W CPU/RAM, SD-card lifetime, response-time or production-load
+measurements were made. Two threads and these limits are starting defaults, not
+benchmark-proven optima. Increase threads if blocking commands delay dashboard
+requests, and size caches/history for your own workload.
 
-## Archive verification
+Real devices/ping/WoL, production MQTT broker/ACLs, Home Assistant discovery,
+physical shutdown/reboot confirmation, sudo policy, systemd deployment, Alpine
+OpenRC deployment, TLS/reverse-proxy setup and ARMv6 execution were not tested.
+Python 3.10/3.11/3.13+ and actual Paho 1.x were not run; simulated 1.x API checks
+pass. The JSON budget is not a whole-process memory ceiling. Existing import-started
+workers require one panel process; no multiprocess coordination was added.
 
-The clean source ZIP contains **44 files** under `Homelab-Panel-0.0.27/`. It preserves all **44 paths from 0.0.26**, including all **42 original-upload paths**. No project file is removed or renamed. Original and previous-release file permissions are preserved. An external manifest records original, previous and final SHA-256 hashes/modes and change status for every path.
-
-Packaging verifies CRC, unique safe paths, no symlinks/case collisions, exact archive/tree bytes and modes, all original/previous paths, fresh-extraction hashes/compilation and version commands. Exclusions include `__pycache__`, `.pyc`, `.pyo`, active private configs, runtime state/logs, virtual environments, build/cache artifacts, downloaded browsers/dependencies, diagnostics, test logs and temporary files. Root `.gitignore`, empty package markers, all tests, examples and necessary original support files remain included.
-
-## Limits and deployment
-
-Actual Pi Zero W CPU/RAM usage, SD-card behavior, production concurrency, real devices/ping/Wake-on-LAN, live Home Assistant/broker/ACL integration, physical power actions, sudo policy and systemd deployment were not exercised. Python 3.10–3.13 and real Paho 1.x were not run; the existing simulated Paho 1.x API checks pass.
-
-Run one panel process. Install the complete source tree and keep active configs/state; the new options have defaults for existing configs. Restart the panel and reload open dashboard tabs once to load the updated script/templates. Existing import-started workers, command transport, sender-controlled retention on the direct agent topic and job/history retention remain unchanged. Background polling remains necessary for server state delivery; local clocks only update elapsed-time text.
+Upgrade using README: retain active configs and state, install the complete source
+and existing dependencies, restart the panel, and reload the dashboard once.
+Do not overwrite your active configuration files with examples.

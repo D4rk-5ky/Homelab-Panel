@@ -24,6 +24,19 @@ Release ZIPs must exclude generated Python bytecode/cache files and temporary/bu
 
 ---
 
+## 0.0.28 — 2026-10-26
+
+### Configurable Waitress and bounded state caching for Pi Zero W
+
+- Advance exactly 0.0.27 → 0.0.28 from the supplied `Homelab-Panel-main.zip`. Preserve every original file/path and original permission bits; retain all prior history. Keep canonical `VERSIONING.md` and supply an identical lowercase `versioning.md` in the ZIP as requested.
+- Reuse the existing Waitress entry point and cache/dashboard modules. Add `modules/panel_server.py::server_options()` to validate a supported optional `WEB_SERVER_CONFIG`: host 0.0.0.0, port 5000, threads 2, connection_limit 32, backlog 64, channel_timeout 30, cleanup_interval 5. Reject unknown keys, invalid types and ports before workers start. Existing configs may omit the dictionary. Import Waitress before starting the runtime on direct execution; one-process import-startup behavior remains unchanged.
+- Extend `PanelJsonCache` with optional `STATE_CACHE_CONFIG`: enabled True, max_files 3, max_bytes 2097152. Add LRU eviction, exact total source-byte accounting, oversized/disabled bypass, opened-file device/inode/mtime/ctime/size signatures and before/after-read stability checks. Keep isolated cached returns and missing/corrupt fallback. Limits bound retained serialized source bytes and file count, not total decoded/process RAM; eviction/bypass does not delete or truncate persisted data. Existing prepared/dashboard/job caches remain active.
+- Skip `update_device_runtime()` writes only when all requested keys already exist with unchanged values. Reduce redundant SD-card writes and needless dashboard invalidations for repeated boot/status fields. Persist real changes immediately through existing atomic writers; do not defer history/jobs or power-state changes.
+- Preserve action manager, shared MQTT/CLI, remote-agent services/code, command allow-lists, retained panel-control rejection, browser confirmations, auth/session handling, fresh MQTT rules, physical-confirmation probes, job deadlines and all data-retention settings byte-for-byte where unaffected. Update only the panel service's explanatory thread comment.
+- Add 10 Pi runtime regressions covering settings/defaults, real startup wiring, LRU count and combined-byte eviction, oversize/bypass behavior, corruption/deletion/growth, concurrent isolated reads, no-op writes and durable real updates. Extend startup regression for older configs omitting optional settings. Fix a macOS fixture path to resolve `/var` versus `/private/var`; production path guards remain unchanged.
+- Update the browser fixture to use the configured Waitress settings (localhost/ephemeral-port overrides only). Replace its fragile fixed 1.2-second countdown wait with a bounded observed-tick check, bring the tested page forward, and give its test-only job a 10-second deadline. Production browser code and job deadlines are unchanged.
+- Update current-use README, complete configuration example and function/command map, preserving both user-supplied disclaimer bodies. Record actual checks and limitations in VALIDATION.md. Deliver the complete clean project ZIP, SHA-256 and original/final file manifest.
+
 ## 0.0.27 — 2026-10-25
 
 ### Shared prepared dashboard and demand-loaded jobs for low-power hosts

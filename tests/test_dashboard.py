@@ -169,14 +169,16 @@ class DashboardTests(unittest.TestCase):
             module = types.ModuleType(name)
             exec((ROOT / "homelab-panel/configs" / filename).read_text(), module.__dict__)
             # Existing active configs may omit the optional paging setting.
-            module.__dict__.pop("DASHBOARD_JOB_PAGE_SIZE", None)
+            for optional in ("DASHBOARD_JOB_PAGE_SIZE", "WEB_SERVER_CONFIG", "STATE_CACHE_CONFIG"):
+                module.__dict__.pop(optional, None)
             fixtures[name] = module
         with patch.dict(sys.modules, fixtures), patch.object(sys, "argv", ["app.py"]), patch("threading.Thread.start"), \
              patch("paho.mqtt.client.Client"), patch("waitress.serve") as serve, \
              patch("flask.Flask.run") as development, contextlib.redirect_stdout(io.StringIO()):
             runpy.run_path(str(ROOT / "homelab-panel/app.py"), run_name="__main__")
         serve.assert_called_once()
-        self.assertEqual(serve.call_args.kwargs, {"host": "0.0.0.0", "port": 5000, "threads": 4})
+        self.assertEqual(serve.call_args.kwargs, {"host": "0.0.0.0", "port": 5000, "threads": 2,
+                         "connection_limit": 32, "backlog": 64, "channel_timeout": 30, "cleanup_interval": 5})
         development.assert_not_called()
 
     def seed_jobs(self, count=100, device_id="aoostar_wtr"):

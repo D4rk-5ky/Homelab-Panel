@@ -25,7 +25,7 @@ Current-code map for Homelab Panel. This is not release history; it explains wha
 | `load_runtime_state_unlocked()` | Loads persistent per-device runtime/expected-state data; state survives panel restart. |
 | `save_runtime_state_unlocked()` | Atomically saves runtime state; avoids corruption during monitor updates. |
 | `get_device_runtime()` | Returns one device runtime state under lock; callers cannot mutate shared data unsafely. |
-| `update_device_runtime()` | Merges and persists per-device runtime fields under lock; centralizes expected/transition state writes. |
+| `update_device_runtime()` | Merges per-device runtime fields under lock; skips the disk write only if every requested key already exists unchanged. Persists real/new fields immediately, reducing repeated boot-ID SD writes without write-behind risk. |
 | `get_expected_state()` | Returns expected state from an optional batched runtime record or the existing live reader, then the device default; keeps planned-downtime interpretation in one function. |
 | `set_expected_state()` | Persists expected state, reason and timestamp; power workflows can explain why offline is expected. |
 | `load_panel_jobs_unlocked()` | Loads persistent panel-side job records; job display survives panel restarts. |
@@ -296,9 +296,9 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 
 | Class / method | What / why |
 |---|---|
-| `PanelJsonCache.__init__()` | Creates one lock and file-version dictionary for the fixed runtime files. |
-| `PanelJsonCache.version()` | Returns inode/mtime/ctime/size, or None when missing, without loading/copying cached data; prepared requests detect external edits with one check per source. |
-| `PanelJsonCache.load()` | Checks inode/mtime/ctime/size, parses changed JSON, and returns deep copies; missing/corrupt files evict old data. |
+| `PanelJsonCache.__init__()` | Validates enabled/max_files/max_bytes, then creates a lock, LRU file dictionary and combined source-byte counter; bounds retained JSON while keeping existing defaults usable. |
+| `PanelJsonCache.version()` | Returns device/inode/mtime/ctime/size, or None when missing, without loading/copying cached data; prepared requests detect external edits with one check per source. |
+| `PanelJsonCache.load()` | Checks file signatures, reuses an isolated cached copy or decodes the opened file. Compares fstat before/after, bypasses disabled/oversized/unstable reads, evicts LRU entries to enforce count and source-byte limits, and releases entries on parse/read failure. Bypassed objects are private and need no extra copy; disk contents are never evicted. |
 | `PanelJobsCache.__init__()` | Creates one lock and current source/result entry per configured device. |
 | `PanelJobsCache.merge()` | Merges/de-duplicates/sorts panel and remote job sources only when content changes; returns isolated copies before time-dependent timeout evaluation. |
 | `PanelDashboardCache.__init__()` | Creates separate prepare/render locks, one prepared view, process-instance/revision state and bounded per-device row caches. |
@@ -323,7 +323,7 @@ All three included units are deployment examples; their `User`, `Group`, `Workin
 
 | Command / block | What / why |
 |---|---|
-| `python3 app.py` | Starts one Waitress process with four request threads plus panel MQTT/status workers with no arguments; help/version exit before startup. |
+| `python3 app.py` | Starts one Waitress process with validated WEB_SERVER_CONFIG (two request threads by default) plus panel MQTT/status workers with no arguments; help/version exit before startup. |
 | `python3 homelab_control_command_listener.py` | Loads the agent allow-list and runs the MQTT command listener. |
 | `python3 homelab_control_status_indicator.py` | Starts Linux availability/boot/uptime/current-status publication; Linux `/proc` supplies uptime and boot identity. |
 | `python3 shared_modules/mqtt.py --config PATH --topic TOPIC --qos 1 --retain` | Publishes the stdin payload as retained telemetry through Paho. The same CLI without `--retain` can send commands. The JSON config supplies credentials without placing them in argv. |
@@ -554,4 +554,42 @@ The browser fixture also defines `add_clocks()` (receive time plus a short activ
 
 - `test_unloaded_job_deadline_still_updates_active_count()` verifies that an active older job outside the initial five still expires server-side, updates the active count, remains available on expansion and leaves persisted data unchanged.
 - `test_custom_initial_batch_does_not_change_retention()` verifies a configured two-row initial batch independently of the retained job count.
-- `_job_window()` appends a small scroll-for-more sentinel when older rows exist, providing a scroll target even if the initial batch exactly fits the list. It disappears after the complete prefix is loaded. The existing Waitress startup fixture also omits `DASHBOARD_JOB_PAGE_SIZE` to exercise the default for older active configs.
+- `_job_window()` appends a small scroll-for-more sentinel when older rows exist, providing a scroll target even if the initial batch exactly fits the list. It disappears after the complete prefix is loaded. The existing Waitress startup fixture omits `DASHBOARD_JOB_PAGE_SIZE`, `WEB_SERVER_CONFIG` and `STATE_CACHE_CONFIG` to exercise defaults for older active configs.
+
+
+## Waitress configuration and bounded JSON state reuse
+
+| Function / block | What / why |
+|---|---|
+| `homelab-panel/modules/panel_server.py::server_options()` | Merges the supported optional Waitress keys with Pi starting defaults, trims the bind string, validates positive integer values/port range, rejects unknown keys, and returns a new dict. Runs before worker startup so a typo cannot silently select different settings. It never imports Waitress, starts threads or accesses devices. |
+| `PanelJsonCache._signature()` | Builds the common device/inode/mtime/ctime/size identity from stat or fstat; identifies the actual opened source, including external replacements. |
+| `PanelJsonCache._forget()` | Removes one retained entry and subtracts its source size under the cache lock; keeps LRU eviction/error accounting consistent. |
+| `app.py` configuration block | Resolves optional WEB_SERVER_CONFIG through server_options and STATE_CACHE_CONFIG through the existing PanelJsonCache constructor before workers are created. Older active configs need no migration. |
+| `app.py` direct startup block | Imports Waitress before runtime start, validates existing web auth, starts the MQTT/status runtime once and serves using WEB_SERVER_OPTIONS. The import path preserves existing auth/runtime behavior. |
+| `homelab-controll.service` | Keeps the original service command and deployment placeholders; the comment identifies configurable threads. Settings live in config.py, not unit command-line flags. |
+
+The supported options and their units/defaults are exhaustively listed in README and config.example.py. max_bytes bounds the combined on-disk size of retained JSON sources, not Python heap usage. Oversized sources remain readable; jobs/history limits and prepared/HTML cache bounds retain their own meanings. Disabling JSON reuse does not disable the other cache layers. Dynamic web pages and actions keep private/no-store, and power confirmation still uses live probes.
+
+## `tests/test_pi_runtime.py`
+
+Each check loads the real panel with mocked background I/O and temporary files; no real broker/device/power command is contacted.
+
+| Function | What / why |
+|---|---|
+| `setUp()` | Load the real panel with mocked background I/O and disposable state files. |
+| `source()` | Write a cache source and return its path and exact serialized size. |
+| `test_json_cache_evicts_least_recently_used_file_by_count()` | Warm reads update recency; evicted data reloads without altering disk. |
+| `test_total_source_budget_and_oversized_bypass_preserve_data()` | The combined byte budget is enforced; large files are readable, uncached. |
+| `test_disabled_cache_reopens_sources_and_keeps_no_entries()` | Diagnostic bypass affects JSON reuse only and returns independent reads. |
+| `test_cache_releases_accounting_on_corruption_delete_and_growth()` | Failures and oversized replacements cannot leave stale retained objects. |
+| `test_concurrent_cold_reads_parse_once_and_return_isolated_objects()` | Waitress readers share a parse without exposing mutable cached state. |
+| `test_repeated_runtime_update_skips_write_but_real_changes_persist()` | Repeated boot IDs do not write the SD card or invalidate the dashboard. |
+| `test_noop_does_not_hide_new_missing_or_invalid_runtime_records()` | Absent keys, invalid records and new devices still receive durable writes. |
+| `test_cache_configuration_rejects_invalid_limits()` | Fail before startup for mistyped booleans, nonintegers or invalid budgets. |
+| `test_server_options_validate_and_do_not_mutate_user_config()` | All supported values pass through; unknown/invalid settings fail closed. |
+| `test_direct_start_applies_config_and_imports_server_before_workers()` | The normal app entry uses actual config values and starts each runtime once. |
+| `read()` | Synchronize cold readers so they contend for the production lock. |
+
+The test-only macOS path normalization in test_home_assistant.py uses Path.resolve() before asserting exact action argv, matching the existing production realpath guard. It does not relax containment or executable checks.
+
+The browser fixture creates its real Waitress server from WEB_SERVER_OPTIONS, overriding only the localhost bind and ephemeral port. Its clock check brings the page forward and waits for observed age/countdown movement with a seven-second bound instead of assuming a tick within a fixed sleep. add_clocks() uses a ten-second test-only deadline; production JavaScript and power/job timing are unchanged.

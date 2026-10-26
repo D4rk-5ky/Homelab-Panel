@@ -126,7 +126,7 @@ class HomeAssistantTests(unittest.TestCase):
         self.assertTrue(self.published)  # Sensors can still be discovered.
 
     def test_web_and_mqtt_local_buttons_use_same_allow_listed_script(self):
-        scripts = Path(self.temp.name) / "scripts"
+        scripts = Path(self.temp.name).resolve() / "scripts"
         scripts.mkdir()
         script = scripts / "shutdown_delay.sh"
         script.write_text("#!/bin/sh\nexit 0\n")

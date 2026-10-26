@@ -55,13 +55,13 @@ def add_clocks():
     panel.MQTT_RUNTIME.set_state("aoostar/status/power", "online", False, 0)
     panel.update_panel_job("aoostar_wtr", "clock-job", status="confirming", command="custom",
                            label="Clock test", started_at=datetime.fromtimestamp(now).isoformat(),
-                           updated_at="9999", job_timeout_seconds=5)
+                           updated_at="9999", job_timeout_seconds=10)
     return jsonify(ok=True)
 @panel.app.post("/_test/restart-cache")
 def restart_cache():
     panel.DASHBOARD_CACHE = type(panel.DASHBOARD_CACHE)(panel.render_template)
     return jsonify(ok=True)
-server = create_server(panel.app, host="127.0.0.1", port=0, threads=4)
+server = create_server(panel.app, **{**panel.WEB_SERVER_OPTIONS, "host": "127.0.0.1", "port": 0})
 print("READY " + str(server.effective_port), flush=True)
 server.run()
 `;
@@ -168,6 +168,7 @@ server.run()
     await page.waitForTimeout(100);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
     // Age/countdown text advances without replacing cached cards or job rows.
+    await page.bringToFront();
     await context.request.post(base + '/_test/clocks');
     await page.waitForSelector('[data-job-id="clock-job"] [data-panel-countdown]');
     const countdown = page.locator('[data-job-id="clock-job"] [data-panel-countdown]');
@@ -175,9 +176,12 @@ server.run()
     const beforeClock = Number(await countdown.innerText());
     const beforeAge = Number(await age.innerText());
     await countdown.evaluate((node) => { node.testMarker = 'clock-node'; });
-    await page.waitForTimeout(1200);
-    assert.ok(Number(await countdown.innerText()) < beforeClock, 'Countdown should tick locally');
-    assert.ok(Number(await age.innerText()) > beforeAge, 'MQTT age should tick locally');
+    await page.waitForFunction(({ beforeClock, beforeAge }) => {
+      const countdown = document.querySelector('[data-job-id="clock-job"] [data-panel-countdown]');
+      const age = document.querySelector('[data-device-status="aoostar_wtr"] [data-panel-age]');
+      return countdown && age && Number(countdown.textContent) < beforeClock
+        && Number(age.textContent) > beforeAge;
+    }, { beforeClock, beforeAge }, { timeout: 7000 });
     assert.equal(await countdown.evaluate((node) => node.testMarker), 'clock-node', 'Clock-only polls must reuse HTML');
     await page.waitForSelector('[data-job-id="clock-job"].timed_out');
     assert.equal(await page.locator('[data-job-id="clock-job"] [data-panel-countdown]').count(), 0);

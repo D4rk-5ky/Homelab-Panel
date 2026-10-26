@@ -20,7 +20,7 @@ if PROJECT_ROOT not in sys.path:
 # Parse inspection options before importing runtime dependencies or private configs.
 if __name__ == "__main__":
     from shared_modules.cli import parse_service_cli
-    parse_service_cli('Run Homelab Panel: one Waitress process on 0.0.0.0:5000 with four threads. Configure homelab-panel/configs/config.py and devices.py before starting.')
+    parse_service_cli('Run Homelab Panel in one Waitress process. Defaults: 0.0.0.0:5000, two request threads. Configure WEB_SERVER_CONFIG and STATE_CACHE_CONFIG in homelab-panel/configs/config.py; device buttons live in devices.py. Run with no arguments to start.')
 
 from flask import Flask, render_template, redirect, url_for, flash, request, session, jsonify
 from configs.config import (
@@ -51,6 +51,14 @@ from modules.panel_home_assistant import HomeAssistantIntegration
 from modules.panel_mqtt import PanelMqttRuntime
 from modules.panel_cache import PanelJsonCache, PanelJobsCache
 from modules.panel_dashboard import PanelDashboardCache
+from modules.panel_server import server_options
+
+# Optional settings preserve existing active configuration files. Validate before
+# constructing workers; misspelled options must not silently select defaults.
+WEB_SERVER_OPTIONS = server_options(getattr(panel_config, "WEB_SERVER_CONFIG", None))
+STATE_CACHE_OPTIONS = getattr(panel_config, "STATE_CACHE_CONFIG", {})
+if not isinstance(STATE_CACHE_OPTIONS, dict):
+    raise ValueError("STATE_CACHE_CONFIG must be a dictionary")
 
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 PANEL_STATE_DIR = os.path.join(APP_DIR, "state")
@@ -75,7 +83,7 @@ PANEL_JOBS_LOCK = threading.Lock()
 BACKGROUND_MONITOR_STARTED = False
 BACKGROUND_MONITOR_LOCK = threading.Lock()
 REMOTE_JOB_EVENT_SEEN = set()
-JSON_FILE_CACHE = PanelJsonCache()
+JSON_FILE_CACHE = PanelJsonCache(**STATE_CACHE_OPTIONS)
 JOBS_CACHE = PanelJobsCache()
 DASHBOARD_CACHE = PanelDashboardCache(render_template, DASHBOARD_JOB_PAGE_SIZE)
 
@@ -270,6 +278,11 @@ def update_device_runtime(device_id: str, **updates) -> dict:
     with DEVICE_RUNTIME_LOCK:
         data = load_runtime_state_unlocked()
         current = data.get(device_id, {})
+        if isinstance(current, dict) and device_id in data and all(
+                key in current and current[key] == value for key, value in updates.items()):
+            # Repeated retained boot IDs and unchanged monitor fields need no SD
+            # write or dashboard invalidation. Actual state changes stay durable.
+            return dict(current)
         if not isinstance(current, dict):
             current = {}
         current.update(updates)
@@ -1396,10 +1409,10 @@ def local_button(button_id: str):
 
 
 if __name__ == "__main__":
+    from waitress import serve
     validate_web_auth_config()
     MQTT_RUNTIME.start()
-    from waitress import serve
-    serve(app, host="0.0.0.0", port=5000, threads=4)
+    serve(app, **WEB_SERVER_OPTIONS)
 else:
     validate_web_auth_config()
     MQTT_RUNTIME.start()

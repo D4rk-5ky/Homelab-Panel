@@ -1,0 +1,711 @@
+# VERSIONING.md
+
+## Version policy
+
+This project uses three-part numeric versions and increments every created release by exactly `0.0.1`.
+
+Examples:
+
+- `0.0.1` → `0.0.2`
+- `0.0.98` → `0.0.99`
+- `0.0.99` → `0.1.0`
+
+The rollover is **not** `0.0.100`.
+
+Every created release must update:
+
+- `VERSION`
+- `VERSIONING.md`
+- `README.md` when current behavior/usage/configuration changes
+- `commented_code_map.md` when functions, routes, scripts, commands, or architecture change
+- all affected configuration example files
+
+Release ZIPs must exclude generated Python bytecode/cache files and temporary/build artifacts. Runtime logs/state should not be shipped as historical machine data unless there is a specific reason to preserve them.
+
+---
+
+## 0.0.28 — 2026-10-26
+
+### Configurable Waitress and bounded state caching for Pi Zero W
+
+- Advance exactly 0.0.27 → 0.0.28 from the supplied `Homelab-Panel-main.zip`. Preserve every original file/path and original permission bits; retain all prior history. Keep canonical `VERSIONING.md` and supply an identical lowercase `versioning.md` in the ZIP as requested.
+- Reuse the existing Waitress entry point and cache/dashboard modules. Add `modules/panel_server.py::server_options()` to validate a supported optional `WEB_SERVER_CONFIG`: host 0.0.0.0, port 5000, threads 2, connection_limit 32, backlog 64, channel_timeout 30, cleanup_interval 5. Reject unknown keys, invalid types and ports before workers start. Existing configs may omit the dictionary. Import Waitress before starting the runtime on direct execution; one-process import-startup behavior remains unchanged.
+- Extend `PanelJsonCache` with optional `STATE_CACHE_CONFIG`: enabled True, max_files 3, max_bytes 2097152. Add LRU eviction, exact total source-byte accounting, oversized/disabled bypass, opened-file device/inode/mtime/ctime/size signatures and before/after-read stability checks. Keep isolated cached returns and missing/corrupt fallback. Limits bound retained serialized source bytes and file count, not total decoded/process RAM; eviction/bypass does not delete or truncate persisted data. Existing prepared/dashboard/job caches remain active.
+- Skip `update_device_runtime()` writes only when all requested keys already exist with unchanged values. Reduce redundant SD-card writes and needless dashboard invalidations for repeated boot/status fields. Persist real changes immediately through existing atomic writers; do not defer history/jobs or power-state changes.
+- Preserve action manager, shared MQTT/CLI, remote-agent services/code, command allow-lists, retained panel-control rejection, browser confirmations, auth/session handling, fresh MQTT rules, physical-confirmation probes, job deadlines and all data-retention settings byte-for-byte where unaffected. Update only the panel service's explanatory thread comment.
+- Add 10 Pi runtime regressions covering settings/defaults, real startup wiring, LRU count and combined-byte eviction, oversize/bypass behavior, corruption/deletion/growth, concurrent isolated reads, no-op writes and durable real updates. Extend startup regression for older configs omitting optional settings. Fix a macOS fixture path to resolve `/var` versus `/private/var`; production path guards remain unchanged.
+- Update the browser fixture to use the configured Waitress settings (localhost/ephemeral-port overrides only). Replace its fragile fixed 1.2-second countdown wait with a bounded observed-tick check, bring the tested page forward, and give its test-only job a 10-second deadline. Production browser code and job deadlines are unchanged.
+- Update current-use README, complete configuration example and function/command map, preserving both user-supplied disclaimer bodies. Record actual checks and limitations in VALIDATION.md. Deliver the complete clean project ZIP, SHA-256 and original/final file manifest.
+
+## 0.0.27 — 2026-10-25
+
+### Shared prepared dashboard and demand-loaded jobs for low-power hosts
+
+- Advance exactly 0.0.26 → 0.0.27. Preserve all existing project files, permission metadata, complete prior version history, CLI flags and both disclaimer bodies.
+- Extend the existing PanelDashboardCache with one locked prepared snapshot. Invalidate on MQTT receive revision/connectivity, measurements, provisional action/WoL state, current device/config limits and runtime/job file identities; also invalidate on server MQTT/monitor/job deadlines or a backwards wall-clock step. No periodic rebuild thread or new service/dependency is added.
+- Add PanelJsonCache.version() for source-identity checks without loading/copying contents. A prepared rebuild loads runtime once, jobs once and MQTT receive metadata once for all devices; unchanged requests reuse prepared state without repeated status construction, job timeout evaluation, source copying or rendering. Adapt existing status/job/receive-time helpers to accept optional batch inputs and preserve direct monitor/HA callers.
+- Emit stable MQTT receive timestamps and active-job timeout_deadline values. Browser labels tick locally from server epoch plus monotonic elapsed time; remove elapsed-second values from prepared fragment sources. The server still enforces integer-second MQTT freshness, stopped-monitor detection and all active job deadlines, including unloaded rows. Browser countdown expiry never marks success, cancels or extends work.
+- Render only the newest optional DASHBOARD_JOB_PAGE_SIZE jobs initially (default 5, minimum 1, capped by PANEL_JOB_MAX_ENTRIES). Add authenticated read-only /api/jobs/<device_id>?limit=N and validated per-device job-window counts on /api/dashboard. Store one lazy HTML row cache per current device/source, bounded by retained jobs, rather than per-browser window caches. Keep full existing retention/history; offer /?jobs=all for no-JavaScript access.
+- Extend the existing browser poll queue to serialize global reads and older-job reads, preserve the global cursor after partial device responses, retain expanded prefixes across new data, and support button/wheel/scroll/keyboard loading, retries, restart reset, focus/scroll anchoring and hidden-tab pause. Add a scroll-for-more sentinel for an exactly fitting first batch. Add a [hidden] CSS rule so the original generic button display style cannot expose hidden loader controls.
+- Add optional MQTT_CONFIG.log_payloads=False to suppress full incoming telemetry printing by default. Keep state/routing, error/rejection, connection and action-result logs. Root-agent services, shared power scripts, action manager, HA integration and generic MQTT transport stay unchanged.
+- Extend Python regressions for batched/reused state, all source invalidations, exact deadlines/clock rewind, pagination/row cache bounds, no-JavaScript access, auth/input/escaping, logging modes and concurrent preparation. Update old CLI tests to read VERSION instead of hard-coding a release. Adapt dashboard metadata/countdown assertions and expand the real Waitress/Chromium fixture for lazy jobs, local timers, timeout, scroll/key loads, retry and serialized requests.
+- Update current-use README, all affected config examples, complete function/command map and validation. The device and remote-agent config examples need no new keys. Full source ZIP preserves all 42 original-upload paths and all 44 paths of 0.0.26; no original file is removed or renamed.
+
+## 0.0.26 — 2026-10-25
+
+### Safe CLI inspection and current-use documentation
+
+- Increment `VERSION` exactly from 0.0.25 to 0.0.26; retain the 0.0.99 → 0.1.0 rollover policy and the complete original history in canonical `VERSIONING.md`.
+- Add shared `shared_modules/cli.py`: `add_version_argument()` reads root `VERSION`, and `parse_service_cli()` provides help/version and rejects unsupported service arguments. The panel and both agents call it on direct execution before private configuration and runtime dependency imports. No-argument startup and panel import startup keep their existing behavior.
+- Add `--version` to the existing MQTT publisher parser and direct-file project-root lookup for the shared helper. Existing publishing flags, required normal inputs, worker protocol, transport/timeouts, credential handling, QoS/retention and no-retry semantics stay intact. MQTT help/version still needs installed Paho.
+- Add shared `power_script_cli()` and move optional root-agent setup into `load_control_status()`. All four power scripts parse help/version and reject unsupported/extra arguments before calling setup. No-argument execution retains original shutdown/reboot/cancel argv, root/sudo selection, remote status integration and success/failure handling. No dry-run or configurable-delay option is added.
+- Add `tests/test_cli.py` covering safe service inspection without site packages, publisher version without publishing inputs, shell inspection/setup traps, and stubbed root/sudo success/failure argv. Update the existing runpy Waitress startup fixture to supply actual service argv instead of unittest runner arguments.
+- Add the already-supported panel `MQTT_CONFIG.keepalive` option to its config example and README (default 60); no runtime option or dependency is introduced. Device/agent examples remain complete and byte-identical.
+- Update README to current-use help/version/exit-code behavior, explicit remote `target` envelopes, current-page scroll anchoring, required HA birth keys, complete-install `VERSION` requirements, and generic replacement instructions. Preserve both supplied disclaimer bodies and project-local links; keep historical changes here only.
+- Expand `commented_code_map.md` for every new function, entry-point block, script command and test. Refresh `VALIDATION.md` with actual checks/limits. Preserve all 42 original file paths and original permission metadata; add only the shared CLI helper and CLI regression file. Package a clean full-project ZIP and externally record original/release hashes, additions and file preservation.
+
+## 0.0.25 — 2026-10-24
+
+### Waitress, in-memory shared caches and incremental dashboard updates
+
+- Replaced the `app.run()` development server with one Waitress process and four request threads; `python app.py` and the existing service entry retain their startup shape. Added `requirements.txt` and venv/service upgrade instructions.
+- Removed full-page timed refresh. Added authenticated `GET /api/dashboard`, per-tab revision cursors, a process-instance reset token, and browser updates containing only changed status/job fragments.
+- Added thread-safe, process-local caches for decoded runtime JSON, merged/sorted jobs and escaped shared card HTML. Detect state-file replacements, external edits, deletion and corruption; keep lifecycle timeout/countdown evaluation time-dependent.
+- Web requests use monitor-cached ping measurements only. Startup/expired measurements appear unknown/stale, and current MQTT connection/TTL state prevents false green online indications after broker loss.
+- Added asynchronous command submissions with confirmation prompts, per-browser result messages and ordinary form fallback. Login/username/flash content stays outside shared caches. Dynamic responses are private/no-store; expired JSON sessions receive 401.
+- Added non-overlapping polling, connection timeout/recovery, hidden-tab pause and job-scroll preservation; power commands are never retried automatically.
+- Added dashboard/session/cache/server regression coverage. Fixed the existing test loader's module-lifetime issue so module-owned callback patches work after fixture cleanup.
+- Updated README, examples, service comments, code map and validation. Version advances exactly from 0.0.24 to 0.0.25. Remote action protocols, agent code and configured power semantics are unchanged.
+
+## 0.0.24 — 2026-09-27
+
+### Optional job lifecycle timeout and Paho MQTT 1.x compatibility
+
+- Added the optional per-button `job_timeout_seconds` lifecycle setting. While a configured job remains `queued`, `running`, `waiting`, or `confirming`, the panel exposes the remaining seconds; after the deadline it is shown as the distinct terminal `timed_out` state and no longer counts as an active job. Omitting the setting leaves the panel lifecycle unlimited.
+- Set the supplied shutdown/reboot button examples to `job_timeout_seconds: 60`, as requested. Their fallback physical confirmation deadlines are also shown as 60 seconds in the example configuration. The lifecycle timeout does not kill a remote script; Homelab Control's existing command `timeout` remains the separate subprocess execution limit.
+- Added an explicit timeout note to expired job cards and a separate **purple** visual state. Current job colors are green=`success`, red=`failure`, yellow/orange=active/waiting, and purple=`timed_out`.
+- Kept display-time expiry non-destructive: `combined_device_jobs()` derives a timed-out view without rewriting stored remote state, so a later real success/failure report can still replace the display timeout.
+- Reused one `PanelActionManager.configured_job_timeout_seconds()` resolver for button configuration, dashboard evaluation, and power confirmation rather than duplicating timeout parsing.
+- Changed shutdown/reboot confirmation-deadline expiry from `failure` to `timed_out`/warning. A cancellation still stops its confirmation worker; if the original job is left unresolved, the configured lifecycle timeout ages it out of the active-job set.
+- Changed Homelab Control subprocess execution timeout reporting from `failure` to the same distinct `timed_out` state with an explicit non-active message. Other script errors/non-zero exits remain `failure`.
+- Reintegrated Paho MQTT 1.x support while retaining Paho 2.x callback API v2. Shared client construction requests `CallbackAPIVersion.VERSION2` only when that API exists; connect/disconnect callbacks accept and normalize both version families.
+- Reworked the optional long-running publish-completion wait to bounded `is_published()` polling, which is available across supported Paho 1.x/2.x versions and avoids a version-specific completion-call dependency. The one-shot publisher also accepts both four-argument Paho 1.x and five-argument Paho 2.x connect callbacks.
+- Extended regression coverage for optional/non-active lifecycle expiry, countdown behavior, confirmation timeout handling, dashboard timeout rendering, and simulated Paho 1.x constructor/callback behavior.
+- Updated README.md, `commented_code_map.md`, and the affected device configuration example for current behavior. Existing command allow-lists, retained-command safety, path guards, authentication, power-script semantics, and unrelated MQTT behavior remain unchanged.
+- Version advances exactly from 0.0.23 to 0.0.24.
+
+## 0.0.23 — 2026-09-27
+
+### Self-describing MQTT CLI and flag documentation audit
+
+- Kept application/runtime behavior unchanged. This release does not alter MQTT transport semantics, command envelopes, allow-lists, Home Assistant discovery, web routes, power actions, status evaluation, or persistence behavior.
+- Audited every project-owned command-line entry point. `shared_modules/mqtt.py` remains the only argument-parsed application interface; `app.py`, both Homelab Control daemons, and the bundled power scripts intentionally have no CLI flag parser.
+- Expanded `shared_modules/mqtt.py --help` so every supported flag is self-describing: `--config PATH`, internal `--request-stdin`, `--topic TOPIC`, `--qos {0,1,2}`, `--retain`, and `--timeout SECONDS`. Help now states normal stdin behavior, defaults/constraints, the end-to-end timeout scope, retained-command safety, and includes a normal retained-telemetry example.
+- Kept the existing parser behavior and safety model intact: normal mode still requires `--config` plus `--topic`; payload stays on stdin; credentials stay in the JSON config; publication topics still reject empty names and MQTT wildcards in `_publish_once()`; commands remain non-retained by policy; the internal worker remains mutually exclusive with normal config mode.
+- Strengthened `test_cli_help_and_config_errors()` so the regression suite checks that safe help exposes every flag plus the stdin and retained-command safety guidance before verifying missing-config failure.
+- Reworked README.md's current-use command reference to describe every project-owned flag with value type, required/default state, purpose, safety implications, examples, timeout units, and exit-code behavior. External command flags (`wakeonlan`, `ping`, `shutdown`, `systemctl`, `journalctl`, `chmod`, and Python test/helper flags) are separately identified so they are not mistaken for application flags.
+- Updated `commented_code_map.md` with the complete CLI flag contract, why each flag exists, and the expanded `cli_main()` / test responsibilities while preserving coverage of all current Python/shell functions and commands.
+- Audited all three tracked configuration examples against current code. No configuration key or available option changed in this release, so the examples intentionally remain byte-identical to 0.0.22 rather than receiving cosmetic churn.
+- Preserved the existing README disclaimer text unchanged because no replacement disclaimer body was included with this request.
+- Version advances exactly from 0.0.22 to 0.0.23.
+
+## 0.0.22 — 2026-09-26
+
+### Remove test-only API surface and redundant test scaffolding
+
+- Audited production symbols twice: once against production callers only and once including `tests/`. No complete production function remained solely because a test referenced it; framework callbacks/routes and injected callbacks were checked separately so indirect runtime use was not mistaken for dead code.
+- Removed optional/default call forms that current production never uses: `MqttClient.start()` now requires an explicit lifecycle mode, long-running `MqttClient.publish()` and `publish_message()` require explicit QoS/retain values, the private one-shot worker requires its full request fields, panel MQTT cache/direct-publish helpers require the retain/QoS values supplied by their only runtime callers, the status indicator requires explicit text defaults and publish QoS/retain, and remote action dispatch requires an explicit `source`.
+- Removed the test-only `cli_main(argv=...)` injection surface. The MQTT CLI now always parses the real process `sys.argv`; tests patch `sys.argv` and therefore exercise the same entry path used by shell/service callers.
+- Simplified current Paho-v2 reason handling by comparing callback `ReasonCode` directly with zero and using its string form for errors, as supported by Paho callback API v2. This removed the unused `_reason_value()` / `_reason_text()` normalization layer.
+- Removed redundant test scaffolding: the separate callback-delivery helper is now local to the fake client builder, and the standalone client-construction test was merged into the existing shared long-running-client test instead of constructing the same transport twice. Tests that previously depended on implicit MQTT defaults now supply the same explicit QoS/retain values as production callers.
+- Re-ran the caller/default audit after cleanup. The only reported remaining default that appears syntactically always supplied is `run_command(timeout=20)`, but it is genuinely used through the injected `PanelActionManager` callback, which calls it without a timeout; it is therefore retained.
+- Component independence is unchanged: panel and control still do not import each other, and `shared_modules/mqtt.py` remains the only shared Python implementation.
+- Production Python/shell source is **3,501 lines**, down from **3,523** in 0.0.21. Test source is **591 lines**, down from **596**. The release contains **163 production functions** and **200 Python/shell functions including tests**.
+- The source manifest remains exactly **34 project paths**; no source file was added or removed. Version advances exactly from 0.0.21 to 0.0.22.
+
+## 0.0.21 — 2026-09-26
+
+### Current-code-only cleanup and dead/legacy path removal
+
+- Audited every current Python and shell function against direct callers, callback registrations, thread targets, Flask route/hooks, service entry points, and shell call sites. After cleanup, every remaining function has a current execution purpose; the only Python functions without a textual name-call are Flask hooks/routes registered by decorators.
+- Removed the old app-level compatibility/delegation layer around `PanelActionManager`, `PanelMqttRuntime`, and `HomeAssistantIntegration`. `app.py` now calls the owning module objects directly instead of mirroring action, MQTT, HA, and connection-state functions/flags.
+- Removed derived/sibling status-topic compatibility. Current `devices.py` status topics are explicit; empty entries disable that specific subscription. `PanelMqttRuntime` uses one local `STATUS_TOPIC_KEYS` tuple for subscription and diagnostics rather than repeating the same current topic list.
+- Removed the old query-string `PANEL_TOKEN` access path. Web access is now only open when web auth is disabled or protected by the configured Flask session login when enabled.
+- Removed delayed-command aliases and implicit remote targeting. Panel-control MQTT now requires an explicit `target` (`remote` or `local`); remote commands use their configured button IDs directly.
+- Removed `json_jobs` and plain-text remote-agent command support. Panel-to-agent commands always use the current JSON `command`/`job_id`/`source` envelope, and the agent rejects plain strings or partial envelopes.
+- Removed old command-map string entries. Homelab Control command allow-list entries are current object specs; object defaults for label/category/timeout remain supported as current configuration behavior.
+- Removed pre-current boot-history migration/archive helpers. Boot handling now compares the saved/current Linux boot ID, clears current command fields and appends a boot event only when an already-known boot ID changes.
+- Removed Paho v1 callback-constructor support, public callback aliases, flexible string subscriptions, and the unused connect-only lifecycle mode. `shared_modules/mqtt.py` now requires Paho callback API v2 (`paho-mqtt` 2.x+) and supports only the three production long-running modes (`forever`, `thread`, `async_thread`).
+- Removed duplicate `load_config()` functions, the unused status-indicator logs-directory responsibility, shell `json_get_optional()`, invalid-history-limit fallback, no-op command alias variables, and other current-path leftovers identified by the function/caller audit.
+- Kept component boundaries intact: `homelab-panel` and `homelab-control` do not import one another. The only shared Python implementation remains `shared_modules/mqtt.py`; panel-specific and control-specific behavior stays in its own component. Existing shared root power scripts remain unchanged as the configured action executables.
+- Updated examples and README to document only the current configuration/protocol: required local HA `name`, explicit status topics, explicit panel `target`, JSON-only agent commands, and Paho 2.x+.
+- Updated tests away from removed compatibility surfaces and added assertions for the current explicit-target/JSON-envelope/Paho-v2 paths.
+- Production Python/shell source is **3,523 lines**, down from **4,018** in 0.0.20 (−495 lines) while retaining the current features and safety/path/allow-list behavior.
+- Version advances exactly from 0.0.20 to 0.0.21.
+
+## 0.0.20 — 2026-09-26
+
+### One shared MQTT implementation/API
+
+- Reworked the 0.0.19 shared-MQTT layer after auditing every panel/control MQTT call path. Generic long-running MQTT behavior is now exposed through one `shared_modules.mqtt.MqttClient` API used by the panel, command listener, and status indicator.
+- `MqttClient` now owns Paho client construction/callback-version compatibility, authentication, Last Will, reconnect delay, static/callable subscriptions, connection-loop mode, decoded `(topic, payload, retain, qos)` message callbacks, long-running publication result handling, and clean stop/disconnect. Production component code no longer implements those transport mechanics.
+- `homelab-panel/modules/panel_mqtt.py` now contains only panel-specific topic selection, receive cache, diagnostics, retained panel-control rejection, HA birth handling, status/job/boot dispatch, and panel connect/disconnect history hooks. Paho callbacks are delegated straight through the shared client.
+- `homelab-control/homelab_control_command_listener.py` and `homelab_control_status_indicator.py` now use the same `MqttClient(...).start()` / `.publish()` interface as the panel. Shared topic derivation also replaces their remaining duplicated sibling-topic helper logic.
+- Removed the root `homelab_mqtt.py` compatibility wrapper. The standalone one-shot CLI is now `python3 shared_modules/mqtt.py ...`, and the remote shell bridge calls that file directly. The bounded publisher already executes this same shared module as its worker.
+- `shared_modules/mqtt.py` remains the only production file that imports Paho. Neither component imports the other component's modules. A remote-agent-only deployment needs `homelab-control/`, root `shared_modules/`, and the shared `scripts/`, but not `homelab-panel/`.
+- The bounded no-reconnect/no-automatic-retry command publisher and its hard parent timeout remain intact. MQTT topics, payload formats, QoS/retain settings, Home Assistant IDs, command allow-lists, state formats, power actions, and config keys are unchanged.
+- Production Python/shell source is **4,018 lines**, down from **4,084** in 0.0.19 while consolidating the common transport behavior.
+- Updated README, code map, tests, validation, and version metadata. Version advances exactly from 0.0.19 to 0.0.20.
+
+## 0.0.19 — 2026-09-26
+
+### Root shared MQTT module
+
+- Added root `shared_modules/mqtt.py` as the single generic MQTT transport implementation used by both `homelab-panel` and `homelab-control`. Added `shared_modules/__init__.py` only as the package marker; no unrelated utility modules were introduced.
+- Consolidated Paho client creation/callback-API compatibility, username/password setup, Last Will configuration, connection-loop modes, direct publish return handling, payload decoding, related-topic derivation, and the bounded disposable one-shot publisher into that shared MQTT module.
+- `homelab-panel/modules/panel_mqtt.py` now keeps only panel-specific MQTT state/subscriptions/dispatch/diagnostics and calls the shared transport helpers. `homelab-panel/app.py` imports the shared one-shot publisher and related-topic helper directly.
+- `homelab-control` command-listener and status-indicator entry points add the project root to `sys.path` from `__file__`, then use the shared MQTT module for client setup/connect/publish helpers while retaining their own job/status logic. Neither component imports the other component's code.
+- Root `homelab_mqtt.py` remains independently executable for shell/service use but is now a thin CLI over the shared MQTT implementation rather than a second transport implementation.
+- No MQTT topics/payloads, QoS/retain defaults, broker credentials, command allow-lists, Home Assistant IDs, browser routes, power semantics, or component-local config paths changed.
+- Updated regression tests, README, code map, validation, and version metadata for the shared transport architecture.
+- Version advances exactly from 0.0.18 to 0.0.19.
+
+## 0.0.18 — 2026-09-26
+
+### Component-local config and module folders
+
+- Moved panel configuration examples from `homelab-panel/` into `homelab-panel/configs/`. Active panel configuration is now loaded from `homelab-panel/configs/config.py` and `homelab-panel/configs/devices.py`. Added `configs/__init__.py` so the directory is an explicit Python package.
+- Moved the three panel implementation modules into `homelab-panel/modules/`: `panel_actions.py`, `panel_home_assistant.py`, and `panel_mqtt.py`. Added `modules/__init__.py` and changed `app.py` to import the same classes through `modules.*`.
+- Moved the remote-agent JSON example to `homelab-control/configs/config.example.json`. Both remote Python entry points now load the active `homelab-control/configs/config.json` path relative to their own file, not the current working directory.
+- Moved the reusable remote shell library to `homelab-control/modules/homelab_control_lib.sh`. The library now derives the `homelab-control` root from its parent directory, preserving the existing `state/` and `logs/` locations while loading `configs/config.json`.
+- Updated `scripts/homelab_action_common.sh` to locate the remote shell module under `homelab-control/modules/` and the active remote config under `homelab-control/configs/`. Shared shutdown/reboot scripts otherwise retain their existing behavior.
+- `homelab_mqtt.py` remains at the project root because it is an independently executable shared one-shot publisher used by both the panel and remote shell helper; it is not a panel-specific module.
+
+### Independent execution and compatibility
+
+- `homelab-panel/app.py` now establishes the panel directory and project root from `__file__` before importing local packages. The panel can therefore still be launched directly by path from an unrelated working directory while resolving its own `configs/` and `modules/`.
+- `homelab_control_command_listener.py`, `homelab_control_status_indicator.py`, and the sourced shell module likewise resolve configuration relative to their component path rather than shell working directory. The entry points remain separate programs and do not require the other Homelab Panel processes to be running.
+- Configuration keys, MQTT topics/payloads, Home Assistant entity IDs, command allow-lists, browser routes, button labels/confirmations, power-script semantics, runtime state locations, and safety/path guards are unchanged. This release changes organization and path resolution, not the configured behavior.
+- Updated offline regression fixtures to load example panel configuration through the new `configs` package and to mirror the new remote `configs/`/`modules/` layout for the shell bridge test.
+- Updated `.gitignore` so only active files under the new `configs/` directories are ignored; tracked examples and package marker files remain included.
+
+### Documentation and verification
+
+- Updated README installation, configuration, module layout, command examples, MQTT CLI examples, and helper paths to the new directories.
+- Updated `commented_code_map.md` with the new module/config locations and why the package markers/path derivation exist.
+- Verified panel, both remote Python entry points, the remote shell module, and the shared action helper resolve their new paths from an unrelated working directory using isolated dependency stubs and temporary active configs.
+- Version advances exactly from 0.0.17 to 0.0.18.
+
+## 0.0.17 — 2026-09-26
+
+### `$TITLE` as the standard confirmation example
+
+- Standardized the supplied example configuration so every non-empty browser `confirm` value uses `$TITLE` instead of hard-coded device text. Wake, shutdown, reboot, custom Watchtower, and local shutdown/reboot examples now all demonstrate the same title-following pattern.
+- Updated README examples and wording to present `$TITLE` as the default/recommended confirmation style while retaining compatibility with literal confirmation strings and empty strings.
+- Clarified that local `$TITLE` resolves from `LOCAL_SERVER["title"]`; the separate local Home Assistant `name` remains unchanged and is not substituted into browser confirmations.
+- No runtime Python, template, MQTT, route, command, allow-list, or safety behavior changed in this release.
+- Updated the code map wording for the example configuration and refreshed validation/version metadata.
+- Version advances exactly from 0.0.16 to 0.0.17.
+
+## 0.0.16 — 2026-09-26
+
+### Device-title placeholders in browser confirmations
+
+- Added optional `$TITLE` expansion for browser confirmation text. Remote Wake-on-LAN and configured remote button confirmations resolve `$TITLE` from that entry's `REMOTE_DEVICES[device_id]["title"]`; local button confirmations can use the same token with `LOCAL_SERVER["title"]`.
+- Existing confirmation strings without `$TITLE` are unchanged, and empty confirmation strings still skip the browser prompt. The placeholder affects only displayed browser confirmation text; button labels, MQTT topics/payloads, Home Assistant names/IDs, and command allow-lists are unchanged.
+- Updated `devices.example.py` Wake-on-LAN, shutdown-delay, and reboot-delay examples to use `$TITLE`, so changing a remote device title no longer requires editing those confirmation messages separately.
+- Changed confirmation rendering in `templates/index.html` to JSON-safe JavaScript strings. This is required for examples such as `'$TITLE'`, because the resolved confirmation contains apostrophes; quoted/Unicode titles can no longer break the inline `confirm(...)` call.
+- Added `resolve_confirmation_text()` in `app.py` rather than creating another module; confirmation expansion is a small web-rendering responsibility and does not justify expanding the module count.
+- Added a regression test covering placeholder expansion, unchanged literal strings, and apostrophe-safe rendering. Updated README, code map, validation, and version metadata.
+- Version advances exactly from 0.0.15 to 0.0.16.
+
+## 0.0.15 — 2026-09-26
+
+### Focused panel modules
+
+- Refactored the 2,232-line `homelab-panel/app.py` into a smaller Flask/state orchestrator plus three focused modules. `app.py` is now about 1,594 lines; the extracted implementations are grouped by responsibility rather than split into many small files.
+- Added `homelab-panel/panel_actions.py` with `PanelActionManager` for guarded local scripts, Wake-on-LAN retry/cancel state, shutdown/reboot confirmation, and configured remote action dispatch.
+- Added `homelab-panel/panel_mqtt.py` with `PanelMqttRuntime` for the long-running/reconnecting Paho client, receive cache, subscriptions, connect/disconnect/message callbacks, diagnostics, direct telemetry publication, and delegation to the existing disposable one-shot publisher for commands.
+- Added `homelab-panel/panel_home_assistant.py` with `HomeAssistantIntegration` for MQTT Discovery, local/remote buttons, availability snapshots, and retained per-device state payloads.
+- Kept persistent panel history, panel/remote job merging, expected state, runtime files, status evaluation, monitor logic, authentication, and Flask routes together in `app.py`; these concerns share state closely and splitting them further would mainly add indirection.
+- Modules receive current configuration/state callbacks from `app.py`. This preserves dynamic `devices.py` configuration and avoids copying config or creating parallel state stores. Existing app-level delegate function names remain where useful for compatibility and regression tests.
+
+### Behavior and safety preservation
+
+- No configuration option, active-config filename, web route, MQTT topic/payload, Home Assistant entity ID, button label, service command, or bundled power-script behavior changed.
+- Preserved local script filename/containment/executable checks, remote command allow-lists, non-retained command behavior, retained panel-control rejection, WoL duplicate/cancel behavior, ping+MQTT confirmation rules, authentication/token gates, and the separate disposable command publisher.
+- Home Assistant discovery output was compared against the untouched 0.0.14 implementation for the example configuration: all 30 discovery publications matched topic, payload, QoS, and retain values.
+- Local configured-script dispatch, remote configured MQTT wire payloads, MQTT diagnostics fields, and formatting helpers were compared against 0.0.14 and matched for the exercised cases.
+
+### Documentation and verification
+
+- Updated the current-use README with the new module layout while leaving the supplied disclaimer sections in place.
+- Updated `commented_code_map.md` so the Flask delegates and every new manager/integration/runtime method explain both what they do and why the boundary exists.
+- Configuration examples are unchanged because this refactor adds no options; they continue to contain the complete available configuration surface.
+- All Python files compile and all six shell scripts pass `bash -n`. The Home Assistant/panel regression suite passes **12/12** under isolated Flask/Paho dependency stubs, covering discovery, control dispatch, path guards, retained-message rejection, HA birth handling, auth/token behavior, and web routes.
+- The real `paho-mqtt` and Flask packages are not installed in this sandbox, so the complete publisher/wire suite could not be rerun here. The panel-to-shared-publisher integration test passes under the isolated dependency environment; production broker, HA, device power, and Linux service operations remain untested.
+- Version advances exactly from 0.0.14 to 0.0.15.
+
+## 0.0.14 — 2026-09-26
+
+### Paho MQTT throughout the application
+
+- Replaced the panel's `mosquitto_pub` command construction with the shared `homelab_mqtt.publish_message()` function. Preserved configured broker/authentication, topic, payload, QoS, retention, dispatch results, and the hard 20-second process timeout.
+- Replaced both credentialed/anonymous `mosquitto_pub` branches in `homelab_control_lib.sh` with the same Paho publisher's CLI. Kept empty-topic no-op, exact payload, QoS 1, retained telemetry, quiet success, and nonzero failure propagation. Removed unused shell MQTT credential variables; Python reads credentials from the existing JSON file.
+- Added `homelab_mqtt.py`: one-shot MQTT 3.1.1 clients, clean sessions, broker-acceptance and send/acknowledgement checks, no automatic retry/reconnect, and explicit uncertain-delivery errors. Failure closes the transport before disconnect can flush queued packets.
+- Paho runs in a disposable Python process with credentials/payload on stdin; timeout kills and waits for the child, covering blocking DNS/connect as well as acknowledgement waits. Shell telemetry now also has a 20-second limit. One-shot keepalive remains 60 seconds; persistent agent keepalive settings are unchanged.
+- Added a documented publishing CLI (`--config`, `--topic`, `--qos`, `--retain`, `--timeout`, `--help`) and internal JSON worker mode (`--request-stdin`). No new configuration keys are needed.
+- All subscriptions already used Paho; there was no `mosquitto_sub` implementation to replace. Existing persistent MQTT clients, web access checks, command allow-lists, retained panel-control rejection, path guards, and power delays remain intact.
+
+### Documentation and tests
+
+- Removed the Mosquitto client-package requirement and command examples from the current README; added publisher usage, all flags, exit codes, completion/timeout semantics, and the continuing MQTT broker requirement.
+- Updated panel example comments, the complete function/command map, and validation notes. Preserved the supplied disclaimer and prior release history.
+- Added tests for publication configuration, failures/timeouts, callback compatibility, panel delegation, CLI input, and the real shell bridge. Added localhost protocol checks using actual Paho for QoS 0/1/2, authentication, retained flags, UTF-8 payloads, refused connections, and absent PUBACK.
+- Extended the existing panel test fixture to block accidental calls to the new publisher.
+- Passed all 27 regression tests, 8 Python compilation checks, 6 shell syntax checks, 4 embedded Python checks, JSON/Jinja parsing, the publisher CLI checks, and function-map coverage for 209 Python/shell definitions. Real Paho protocol tests used a temporary localhost peer; production broker/HA and power operations remain untested.
+- Preserved all 26 original paths; added the shared publisher and its test module. Version advances exactly from 0.0.13 to 0.0.14.
+
+## 0.0.13 — 2026-09-26
+
+### Current-use documentation and release verification
+
+- Preserved all runtime Python, shell, template, service, and test code from the supplied 0.0.12 archive. No runtime behavior, command handling, authentication, path guard, retained-message guard, or power delay changed.
+- Expanded README with an external-command flag reference covering values, units, examples, and command-retention behavior; documented the existing five-card scrolling job lists and saved browser scroll positions.
+- Included the supplied disclaimer wording with Homelab Panel labels and local links to the current README sections, replacing the unrelated project links from the supplied text.
+- Updated the complete function/command map with more precise auth/WoL/listener explanations and shell/service command rationale.
+- Updated comments in both panel configuration examples to explain command retention, browser-only confirmation, and the separate monitor/confirmation workers. Configuration values and all available options are preserved; the remote JSON example already includes all supported fields.
+- Advanced `VERSION` by one patch step from 0.0.12 to 0.0.13, retaining the 0.0.99 → 0.1.0 rollover policy and the existing `VERSIONING.md` filename.
+- Passed all 12 existing regression tests, Python/shell/heredoc syntax checks, JSON/Jinja parsing, config documentation checks, and coverage for 182 Python/shell functions. Live integrations and Linux service/power behavior remain untested.
+- Refreshed `VALIDATION.md` for this release; the final ZIP preserves all 26 original project paths and executable flags and excludes caches, runtime data, and temporary files. External release manifests record original/release SHA-256 values per file.
+
+## 0.0.12 — 2026-09-26
+
+### Configurable local Home Assistant device name
+
+- Added optional `LOCAL_SERVER["name"]` for the local Home Assistant MQTT device name, separate from the webpage-only `LOCAL_SERVER["title"]`.
+- Home Assistant local button discovery now uses `LOCAL_SERVER.name`, so the device name can be the actual host name and HA can present button names in the same device/entity naming pattern as remote devices.
+- Preserved backwards compatibility: active `devices.py` files without `name` continue using `LOCAL_SERVER.title`, then `"Homelab Panel"` as the final fallback.
+- No discovery topic, identifier, unique ID, command payload, script mapping, authentication, retained-message guard, or local execution safety behavior changed.
+
+### Documentation and verification
+
+- Updated `devices.example.py`, README current-use documentation, the complete code map, tests, and validation notes for the new local device-name option.
+- Added regression coverage that checks both the explicit local HA device name and the old-config title fallback.
+- Preserved the existing README disclaimer wording unchanged.
+
+## 0.0.11 — 2026-09-26
+
+### Automatic Home Assistant action buttons
+
+- Added MQTT discovery for every configured `LOCAL_SERVER.buttons` entry, grouped under the local server title and the separate `homelab_local_panel` identifier/topic namespace.
+- Retained discovery for remote device MQTT buttons and enabled Wake/cancel-WoL controls; existing remote entity IDs and topics remain unchanged.
+- Wake buttons now use the same configured label as the webpage; cancel-WoL uses the webpage's label.
+- Added `publish_home_assistant_button()` to share button discovery generation across local, remote and WoL controls. Button command payloads explicitly set `retain=False`; discovery retention remains configurable.
+- Added `publish_home_assistant_snapshot()` to republish discovery, panel availability and cached device state on broker connection or Home Assistant's online birth message. It does not run pings inside the MQTT callback.
+- Added optional `HOME_ASSISTANT_CONFIG.status_topic` (default `homeassistant/status`; empty disables the subscription) and `status_online_payload` (default `online`). Older configs use these defaults.
+- Discovery remains opt-in through `HOME_ASSISTANT_CONFIG.enabled`; example/default is still False. Config changes take effect after restarting the panel.
+
+### Shared local command handling
+
+- Added `execute_local_action()` so the webpage and MQTT both select local scripts from `LOCAL_SERVER.buttons` and reuse existing path/executable/privilege checks.
+- Added explicit panel-control JSON `{"target":"local","command":"<button-id>"}`. A local envelope containing `device_id` is rejected, and a missing or unknown remote device never falls back to local execution.
+- Existing remote `device_id`/`command` messages remain valid; an optional explicit `target=remote` is accepted. Unknown targets and missing commands are rejected.
+- Retained panel-control rejection covers both local and remote commands. Web auth/token guards and all existing shutdown/reboot delays, allow-lists, and confirmation code remain intact.
+- The remote agent and bundled scripts were not modified. Browser confirmation prompts do not transfer to Home Assistant MQTT button presses.
+
+### Documentation and verification
+
+- Reworked README into a current-use guide covering automatic HA setup, all configuration fields, web/MQTT/script commands, external command flags, installation, systemd usage, and limitations. It explicitly distinguishes HA entities from dashboard placement.
+- Updated both affected panel configuration examples and the complete function/command map, including browser callbacks and regression-test helpers.
+- Preserved both original README disclaimer sections verbatim because no replacement disclaimer was supplied.
+- Added `tests/test_home_assistant.py` with 11 offline regression tests using real Flask/Jinja and mocked external I/O, plus `VALIDATION.md` for reproducible checks and manifest accounting.
+- Verified all 24 original files remain present; original executable bits are preserved. All newly added project files are included in the clean ZIP.
+- Python compile checks, shell syntax checks, embedded Python compilation, JSON/Jinja parsing, regression tests, documentation coverage and final ZIP checks are recorded in `VALIDATION.md`.
+- Live Home Assistant/MQTT integration, real power/WoL operations, browser interaction, and Linux systemd execution were not tested in this macOS workspace.
+
+## 0.0.10 — 2026-09-26
+
+### Shared power scripts moved to `scripts/`
+
+- Added a tracked `scripts/` directory at the project root for Homelab Panels shared shutdown/reboot helpers only.
+- Moved `shutdown_delay.sh`, `shutdown_cancel.sh`, `reboot_delay.sh`, `reboot_cancel.sh`, and `homelab_action_common.sh` from the project root into `scripts/`.
+- Kept `homelab-control/homelab_control_lib.sh` in `homelab-control/`; it belongs to the remote agent rather than the shared power-script bundle.
+- Project-specific jobs such as Watchtower/backup/Syncerate are not moved into `scripts/`; they remain owned by their own project/integration.
+
+### Path resolution
+
+- Added panel `SCRIPTS_DIR = PROJECT_ROOT/scripts`; local `LOCAL_SERVER` scripts now resolve only from that directory and reject nested/path-traversal names.
+- Added remote `SCRIPTS_DIR` plus an explicit shared-power-script allow-list. The four bundled power script names automatically resolve from `PROJECT_ROOT/scripts/`, so existing `config.json` entries such as `"script": "shutdown_delay.sh"` remain valid.
+- Preserved 0.0.9 behavior for non-bundled custom job filenames; this release does not relocate those project-specific scripts.
+- Updated `homelab_action_common.sh` for its new location: it treats its directory as `SCRIPT_DIR`, then resolves `PROJECT_ROOT` as the parent and finds `homelab-control/` from there.
+- The four action scripts continue to source `homelab_action_common.sh` relative to their own directory, so they do not depend on the shell working directory.
+
+### Git/development hygiene
+
+- Updated `.gitignore` to ignore `.venv/`, Python bytecode/cache files, and macOS `.DS_Store` in addition to the existing active-config/runtime exclusions.
+- `scripts/` is intentionally tracked source and is not ignored.
+
+### Validation performed for this release
+
+- Started from the user-provided 0.0.9 release ZIP.
+- Verified that all five shared power/helper shell files exist under `scripts/` and no duplicate copies remain at project root.
+- Verified panel local-script resolution points into `PROJECT_ROOT/scripts`.
+- Verified remote built-in power commands resolve into `PROJECT_ROOT/scripts` while non-bundled custom filenames retain the previous resolution behavior.
+- Verified `homelab_action_common.sh` resolves the correct project root and `homelab-control` directory from its new location.
+- Re-ran Python syntax/compile, shell `bash -n`, JSON, Jinja, systemd, `.gitignore`, function-map, manifest, and final ZIP cleanliness checks.
+- No real shutdown/reboot commands were executed during validation.
+
+## 0.0.9 — 2026-09-26
+
+### Optional Home Assistant MQTT Discovery
+
+- Added optional `HOME_ASSISTANT_CONFIG`; disabled by default.
+- Added MQTT Discovery entities for combined online, ping, uptime, last command, and job status.
+- Added Home Assistant buttons for Wake-on-LAN, cancel-WoL, and every configured `mqtt_controls.buttons` entry.
+- Added retained per-device JSON state topics and panel availability/LWT for Home Assistant.
+- Kept combined HA online strict: both ping and fresh MQTT-online must be true simultaneously.
+
+### Generic allow-listed remote jobs
+
+- Extended remote `commands` entries to accept either the legacy `"id": "script.sh"` form or objects containing `script`, `label`, `category`, and `timeout`.
+- Added optional JSON command envelopes carrying `command`, `job_id`, and `source`, while preserving legacy plain-text command payloads.
+- Added script-path containment validation so configured jobs cannot traverse outside the shared project root.
+- Existing dynamic `devices.py` buttons remain the panel allow-list; any added button is also exposed through Home Assistant Discovery.
+- Script result data is published through the separate remote job-status topic, not through `homelab-panel/control`.
+
+### Job lifecycle and parallel execution
+
+- Added remote job state `queued -> running -> success/failure`, including queued/start/finish timestamps, runtime, return code, and bounded stdout/stderr summary.
+- Added retained `status_jobs` snapshots and persistent remote `state/jobs.json`.
+- Added configurable `max_parallel_jobs` and `job_history_max_entries`.
+- Listener startup marks leftover active jobs as failure so interrupted work cannot remain falsely active after a service restart.
+- The command listener now starts independent worker threads so multiple allow-listed jobs/hosts can run concurrently.
+- Added a panel Job Status dashboard that combines panel-side confirmation jobs and remote job results.
+- Added optional `json_jobs=True` per device so the panel and agent can share the exact same job ID.
+
+### Event journal and transition history
+
+- Expanded panel history records with `category`, `event_type`, `severity`, job metadata, and optional duration.
+- Added an event timeline with category filters and an Errors filter while retaining the separate Command/Result/Message history sections.
+- Added panel MQTT connect/reconnect/disconnect events.
+- Added combined availability transition events and previous-state duration.
+- Added remote boot events and optional/derived boot ID and boot time topics.
+- Preserved existing boot cleanup: previous current command state remains in history, while current command/result/message is cleared on a real new Linux boot.
+
+### Expected-state and completion confirmation
+
+- Added persistent per-device expected-state tracking for starting, online, shutdown pending/offline, and rebooting.
+- Expected shutdown state is distinguished from an unexpected offline transition.
+- Added shutdown confirmation requiring both ping offline and MQTT `power=offline`.
+- Added reboot confirmation requiring an offline phase followed by both ping and MQTT online.
+- Existing `shutdown_delay` and `reboot_delay` buttons get confirmation automatically even when older active `devices.py` files do not contain the new `confirmation` field.
+
+### Wake-on-LAN retry/cancel
+
+- Added optional per-device WoL retry interval/max attempts and MQTT-online confirmation timeout.
+- WoL now records each attempt and can confirm completion with ping followed by MQTT.
+- Added a cancel button on the device status card that is shown only while a WoL job is active.
+- Added `cancel_wol` as a panel-control action and Home Assistant button.
+
+### MQTT diagnostics
+
+- Added `/mqtt-diagnostics` showing broker/client state, subscriptions, expected topics by device, latest payload, receive timestamp, age, retained flag, and QoS.
+- Added subscriptions/display support for hostname, uptime, jobs, boot ID, and boot time topics, with sibling-topic derivation for older active device configs.
+- Diagnostics is protected by the same web-login/token guard as all other application pages.
+
+### Configuration and compatibility
+
+- Added `STATUS_MONITOR_INTERVAL_SECONDS`, `PANEL_JOB_MAX_ENTRIES`, and optional Home Assistant settings to `config.example.py`.
+- Added jobs/boot topics, job limits, parallel-job limit, and object-style command examples to remote `config.example.json`.
+- Added WoL retry, confirmation, expected-state, jobs/boot/uptime/hostname topics, `json_jobs`, and a generic Watchtower example to `devices.example.py`.
+- Older active configs remain valid through defaults/topic derivation and legacy command formats.
+
+### Validation performed for this release
+
+- Re-inspected the full 0.0.8 package before changes.
+- Python compile, shell `bash -n`, JSON parse, Jinja parse, and systemd unit verification.
+- Offline panel tests for arbitrary dynamic commands, HA Discovery generation/disabled mode, remote job correlation, independent ping/strict combined online, expected-state display, diagnostics inventory, and conditional WoL cancellation.
+- Remote listener tests for legacy/plain JSON payload compatibility, parallel script execution, success lifecycle, legacy command mappings, and path-traversal rejection.
+- Remote status tests for derived boot/history topics and true-boot archive/clear/boot-event behavior.
+- Live Home Assistant, live MQTT broker, real Wake-on-LAN, shutdown, reboot, and production scripts were not executed in the release environment.
+
+## 0.0.8 — 2026-09-25
+
+### Independent ping and MQTT status
+
+- Kept ping evaluation independent from MQTT so a responding device is visibly shown as `Ping: Svarer` even when MQTT is not configured, not connected, or has not published status yet.
+- Added a three-state combined device presentation: green `Online`, yellow `Ikke fuldt online`, and red `Offline`.
+- The combined green `Online` state now requires ping and MQTT-online to be true at the same time.
+- MQTT-online now additionally requires Homelab Panel's MQTT client to be currently connected to the broker; a cached/fresh-looking previous `online` payload alone no longer counts after broker disconnect.
+- Added explicit MQTT display states for not configured, broker disconnected, broker connected without a device status, stale power status, and fresh power status.
+- Added separate ping/MQTT status indicators in the device card so partial connectivity is visible instead of being hidden behind a single red overall result.
+- Changed panel MQTT startup from blocking `connect()` to `connect_async()` plus the existing background loop/reconnect delay. The web panel and ping therefore keep working when the broker is unavailable at startup, and MQTT can connect later without restarting Homelab Panel.
+- No ping command semantics, MQTT topics, device control, command history, web authentication, shutdown/reboot safety, or config format were changed.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.7 project before modification.
+- Targeted status-model tests cover ping-only, MQTT-only, both online, neither online, broker-disconnected cached MQTT, unconfigured MQTT, and stale MQTT.
+- Targeted MQTT-startup test verifies `connect_async()` is scheduled and the network loop starts without waiting for a successful broker connection.
+- Python compile/syntax, shell syntax, JSON, Jinja, systemd, documentation/function-map, manifest, and release-artifact cleanliness checks were repeated for the final package.
+- A real ICMP ping could not be executed inside the release container because raw-socket permission is denied there; ping behavior was therefore verified through the panel's status logic with controlled ping results rather than by live ICMP from the container.
+
+## 0.0.7 — 2026-09-25
+
+### Event-based device history
+
+- Changed remote command history from one previous-boot snapshot to an event stream: every `write_command_status()` call now appends its own command/result/message/timestamp entry before the current status is overwritten.
+- Intermediate messages such as `running` followed by `success` are therefore both preserved instead of only the final message surviving until the next boot.
+- Added a `source` field to new history events (`Remote enhed` or `Homelab Panel`).
+- Kept `timing.history_max_entries` as the cap for remote history events.
+- Added file locking and atomic replacement when the shell helper appends remote history, reducing the risk of a partially written `history.json`.
+- The complete updated remote history is published retained after each command-status event.
+
+### Clean current status on a new online boot
+
+- Preserved Linux boot-ID detection so a service restart during the same boot does not incorrectly clear status.
+- On a real new boot, the previous current command/result/message is archived only when an identical event is not already present, then the current fields are cleared before the new online state is published.
+- This provides migration safety for older installations while preventing the final event from being duplicated in 0.0.7 history.
+
+### Panel-originated history and online transition
+
+- Panel-originated WoL and remote MQTT dispatches are now persisted per device in `homelab-panel/state/panel_action_history.json`, capped by new optional `PANEL_HISTORY_MAX_ENTRIES` (default 100).
+- A provisional panel action remains visible in the current status card while appropriate, but when that device transitions from non-online/unknown to MQTT `online`, the provisional current panel status is cleared.
+- The same panel action remains in history after the current card is cleared.
+- The per-device history page merges panel-originated and remote-agent events, sorts them newest-first, and shows the source alongside each timestamp.
+
+### Backward-compatible history topic discovery
+
+- `homelab-control` now derives `<prefix>/history` from `status_last_message=<prefix>/last_message` when an older active `config.json` has no `status_history`.
+- Homelab Panel performs the same derivation when an older active `devices.py` has no `history_topic`.
+- Explicit `status_history` / `history_topic` remains supported and is still shown in the example configs.
+- This allows the user's existing `aoostar/status/...` configuration to begin carrying history without requiring an immediate local config edit.
+
+### Configuration and repository hygiene
+
+- Added `PANEL_HISTORY_MAX_ENTRIES = 100` to `homelab-panel/config.example.py`.
+- Added runtime state/log directories to `.gitignore`; active config ignore behavior and all example configs remain unchanged.
+- Updated `README.md`, `commented_code_map.md`, and `VERSION` for current 0.0.7 behavior.
+
+### Validation performed for this release
+
+- Re-reviewed the full 0.0.6 project before modification.
+- Python compile/syntax checks and shell `bash -n` checks.
+- Targeted remote-helper test verified two consecutive status messages create two distinct history events and that an omitted `status_history` derives `aoostar/status/history`.
+- Targeted boot rollover test verified an event already in history is not duplicated, current fields are cleared on a real new boot, and a legacy current status missing from history is archived once.
+- Targeted panel test verified a panel WoL action is persisted, an MQTT offline→online transition clears only its provisional current state, and panel plus remote history events merge without losing messages.
+- Final JSON/Jinja/systemd/manifest/forbidden-artifact checks are recorded with the release package.
+
+## 0.0.6 — 2026-09-25
+
+### Panel-control actions now appear in Remote enhedsstatus
+
+- Fixed incoming `MQTT_CONFIG["panel_control_topic"]` actions being executed/logged without any immediate visible information in Homelab Panel.
+- Added a thread-safe per-device provisional panel-action state for actions initiated through either incoming panel MQTT control or the web panel's remote WoL/MQTT buttons.
+- Added `execute_and_record_remote_action()` so web and MQTT entry points reuse one dispatch-and-record path rather than duplicating status handling.
+- Successful panel dispatch is represented as protocol result `sent`, displayed as Danish `Afsendt`; this intentionally means the WoL/MQTT command was sent, not that the remote operation has completed.
+- Added friendly display mappings for `power_on`, shutdown/cancel, and reboot/cancel panel command names.
+- Improved successful dispatch messages so WoL reports a magic packet sent to the selected device and remote MQTT controls report the configured payload/topic that was published.
+- `evaluate_remote_device_status()` now prefers a newer provisional panel action over older remote command status, then automatically returns to the real remote-agent fields as soon as newer remote command state is received.
+- The comparison uses the panel's local MQTT receipt/event times instead of comparing clocks across separate homelab machines.
+- Provisional panel action state is intentionally in-memory only; a panel restart clears it, while retained remote-agent status/history is unchanged.
+- No remote command allow-list, retained-control rejection, website authentication, shutdown/reboot safety behavior, or history format was weakened or removed.
+
+### Documentation
+
+- Updated `README.md` to explain exactly what an incoming `homelab-panel/control` command displays and the difference between `Afsendt` and a confirmed remote result.
+- Updated `commented_code_map.md` for the new panel-action state helpers and revised status-selection/dispatch flow.
+- Updated `VERSION` to `0.0.6`.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.5 project before modification.
+- Python compile/syntax checks.
+- Targeted offline tests with stubbed Flask/Paho and command execution verified that older retained/current remote state is temporarily overlaid by a newer panel `power_on`, successful dispatch displays `Afsendt`, failure displays `Fejl`, and a newer real remote-agent state supersedes the provisional panel state.
+- Verified the incoming JSON MQTT control path records `device_id`, command, configured panel-control topic source, result, message, and timestamp.
+- Shell/JSON/Jinja/systemd and final ZIP cleanliness/manifest checks repeated for the finished release.
+- A real MQTT broker, actual WoL target, and destructive shutdown/reboot operations were not used during release testing.
+
+## 0.0.5 — 2026-09-25
+
+### Optional website username/password authentication
+
+- Added optional `WEB_AUTH_CONFIG` to `homelab-panel/config.example.py` with `enabled`, `username`, `password`, `secret_key`, and `session_cookie_secure`.
+- Added a global Flask `before_request` authentication guard so, when enabled, all current and future web page/control routes require an authenticated session except the login/static endpoints.
+- Added `GET/POST /login` with generic failed-login feedback and constant-time username/password comparison via `hmac.compare_digest`.
+- Added `POST /logout` and logout controls to the dashboard and device-history page.
+- The signed session stores only an authenticated flag and username; the password is not stored in the session or URL.
+- Configured session cookies as `HttpOnly` and `SameSite=Lax`; optional `session_cookie_secure` is available for HTTPS deployments.
+- Added startup validation that rejects empty auth credentials and unchanged `CHANGE_ME` password/session-secret placeholders when login is enabled.
+- Preserved upgrade compatibility: an existing 0.0.4 `config.py` without `WEB_AUTH_CONFIG` continues with web login disabled.
+- Preserved the legacy `PANEL_TOKEN` gate when web login is disabled. When web login is enabled, the session replaces the query-string token so users are not required to pass both.
+- Added `homelab-panel/templates/login.html`.
+- MQTT control/authentication is unchanged and remains governed by broker authentication/ACLs rather than the website session.
+- No Wake-on-LAN, MQTT dispatch, shutdown/reboot, history, or remote-agent behavior was changed.
+
+### Documentation/configuration
+
+- Updated `README.md` for current 0.0.5 login setup, routes, upgrade behavior, and security limitations.
+- Updated `commented_code_map.md` for all new authentication functions/routes/template behavior.
+- Updated `VERSION` to `0.0.5`.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.4 project before modification.
+- Python compile/syntax checks.
+- Shell `bash -n`, JSON parse, Jinja template parse, and systemd unit checks repeated.
+- Offline auth-flow tests with stubbed Flask/Paho interfaces verified: enabled/disabled auth, unauthenticated protection for all existing control/page endpoints plus a simulated future endpoint, correct and failed login, UTF-8 credentials, logout/session clearing, legacy `PANEL_TOKEN` behavior, old-config fallback, cookie settings, and fail-closed credential/secret validation.
+- Verified `commented_code_map.md` covers all current Python and shell functions and README covers all panel config-example fields.
+- Rechecked `.gitignore` behavior: local active configs are ignored while all three example configs remain trackable.
+- Compared the final manifest with 0.0.4 and accounted for every changed/new file; no original project files were removed.
+- Flask/Paho runtime packages were not available in the execution environment and could not be installed because outbound package access was unavailable, so a real Flask test-client/browser session against the actual Flask package could not be performed here.
+- Final ZIP scanned for forbidden Python bytecode/cache and temporary artifacts.
+
+## 0.0.4 — 2026-09-25
+
+### Shared script location
+
+- Consolidated the four shutdown/reboot action scripts into the project root, beside `homelab-panel/` and `homelab-control/`.
+- Removed the duplicate `homelab-panel/scripts/` and `homelab-control/scripts/` copies.
+- Added `homelab_action_common.sh` so both panel and remote-agent execution reuse one privilege/status integration path.
+- `homelab-panel/app.py` now derives the common project root from its own `__file__` location and no longer requires `LOCAL_SCRIPT_PATH`.
+- `homelab-control/homelab_control_command_listener.py` now derives the same common project root from its own `__file__` location.
+- Root execution continues to use direct `shutdown` and existing remote status/MQTT helpers when an active remote config exists; non-root panel execution continues to use `sudo shutdown`.
+- Removed `LOCAL_SCRIPT_PATH` from `config.example.py` because script discovery is automatic.
+- Updated README/current-use documentation and `commented_code_map.md` for the shared layout and all affected functions/scripts.
+
+### Validation performed for this release
+
+- Re-reviewed the complete 0.0.3 project before modification.
+- Python compile/syntax checks.
+- Shell `bash -n` checks for all shell files.
+- JSON and Python example-config parsing/compile checks.
+- Verified both Python callers resolve action scripts to the same parent directory independent of current working directory.
+- Verified root/shared action-script status integration with command stubs so no real shutdown/reboot was performed.
+- Verified non-root action path selects `sudo shutdown` through a stubbed environment.
+- Compared the final manifest with 0.0.3 and accounted for each moved/added/removed file.
+- Final ZIP scanned for forbidden Python bytecode/cache and temporary artifacts.
+
+## 0.0.3 — 2026-09-25
+
+### Configuration files and Git hygiene
+
+- Added a root `.gitignore` with path-scoped rules for the panel and remote-agent configuration areas.
+- `homelab-panel/config.py`, `homelab-panel/devices.py`, and `homelab-control/config.json` are now local-only files and are intentionally excluded from Git and clean release ZIPs.
+- Preserved all three complete tracked examples:
+  - `homelab-panel/config.example.py`
+  - `homelab-panel/devices.example.py`
+  - `homelab-control/config.example.json`
+- Used path-scoped ignore rules so the panel and control `config*` rules cannot accidentally re-ignore each other's example files.
+- Updated `README.md` with the required copy-from-example setup commands and current release behavior.
+- Updated `commented_code_map.md` to explain the local-only active configuration model and `.gitignore` rationale.
+- No application runtime logic, MQTT behavior, history behavior, shutdown/reboot behavior, or safety behavior was changed.
+
+### Validation performed for this release
+
+- Verified each active 0.0.2 configuration exactly matched its corresponding example before removing the active copies.
+- Verified `.gitignore` ignores exactly the three active configuration paths while leaving all three example files unignored.
+- Python compile/syntax checks performed using temporary generated active configs outside the release tree.
+- Shell `bash -n`, JSON parsing, Jinja template parsing, and systemd unit verification repeated.
+- Final ZIP manifest compared with 0.0.2: only the three requested active config files were removed; `.gitignore` was added; existing source/runtime files were preserved.
+- Final ZIP scanned for forbidden bytecode/cache/temporary artifacts.
+
+## 0.0.2 — 2026-09-25
+
+### MQTT control through Homelab Panel
+
+- Added `MQTT_CONFIG["panel_control_topic"]` so the panel can receive structured JSON control messages from Home Assistant or another trusted MQTT client.
+- Added `execute_remote_action()` as a shared allow-listed dispatcher used by both web routes and incoming panel MQTT control.
+- Added `power_on` through the existing configured Wake-on-LAN path.
+- Added panel MQTT handling for configured `shutdown_delay`, `shutdown_cancel`, `reboot_delay`, and `reboot_cancel` actions.
+- Added user-friendly `shutdown` and `reboot` aliases that resolve to the existing one-minute delayed controls rather than introducing immediate destructive actions.
+- Incoming MQTT control cannot choose an arbitrary shell command, topic, or payload; it must resolve through `REMOTE_DEVICES`.
+- Retained incoming panel-control messages are rejected to prevent stale shutdown/reboot commands from replaying after reconnect.
+- MQTT control work is dispatched from the Paho callback to a daemon thread so external command execution does not block the MQTT network loop.
+
+### Per-boot command history
+
+- Added `status_history` to the remote-agent MQTT topic configuration and `history_topic` to panel device status configuration.
+- Added `history_max_entries` with a default/sample value of 100.
+- Added persistent `state/history.json` and `state/boot_id` runtime state.
+- Added Linux boot-ID detection so command state rolls into history only after an actual machine reboot, not after a status-service restart.
+- Added migration fallback for installations without an existing `boot_id`: existing status is archived only when its `last_updated` timestamp clearly predates the current Linux boot time.
+- On a detected new machine boot, the previous meaningful last command/result/message is archived with its original timestamp, current fields are cleared, and action state is reset to `idle`.
+- History is capped before save to prevent unbounded runtime file growth.
+- The remote status service publishes the complete capped history as retained JSON after MQTT connection.
+
+### Web history UI
+
+- Added `GET /history/<device_id>`.
+- Added a History button to every remote-device status card.
+- Added `templates/history.html` with separate Command, Result, and Message categories.
+- Every history value is displayed with the original event date/time.
+- Devices without a configured history topic receive a valid empty-history page rather than an error.
+
+### Current-status display
+
+- Added display normalization so cleared `none`/`unknown` command sentinel values render as `Ingen`.
+- Added `none` result display handling.
+- Initialized the existing MQTT connection flag explicitly in `app.py`.
+
+### Configuration and documentation
+
+- Updated active and example panel configs with `panel_control_topic`.
+- Updated active and example device configs with `history_topic`.
+- Updated active and example remote configs with `status_history` and `history_max_entries`.
+- Rewrote `README.md` for current 0.0.2 usage only, including all MQTT message formats, history behavior, routes, configuration options, safety notes, and the existing disclaimer/liability text.
+- Updated `commented_code_map.md` for every current Python/shell function, route, command interface, service, and new history component.
+
+### Validation performed for this release
+
+- Full 0.0.1 project inventory and relevant runtime code reviewed before modification.
+- Python compile checks.
+- Shell `bash -n` checks.
+- JSON parse checks.
+- Offline targeted tests for boot/history rollover, duplicate-history prevention on same boot, and remote-action dispatch.
+- Final config-example synchronization checks.
+- Jinja template parse checks where available.
+- Final ZIP forbidden-artifact scan and original/final manifest comparison.
+
+## 0.0.1 — 2026-09-25
+
+Initial tracked release created from the uploaded, previously unversioned `Homelab-Panel-main` baseline.
+
+### Runtime code
+
+- Preserved the existing Python, shell, HTML, systemd, and active configuration behavior unchanged.
+- Normalized the command-listener systemd unit file mode from executable (`0755`) to normal unit-file permissions (`0644`); unit contents were not changed.
+- Did not refactor, rename, or alter shutdown/reboot, MQTT, Wake-on-LAN, ping, token, or status logic in this release.
+
+### Documentation and release structure
+
+- Rewrote `README.md` so it documents current application behavior and usage only, rather than acting as historical release notes.
+- Added the requested liability/disclaimer language and adapted `script` wording to the Homelab Panel project where appropriate.
+- Documented every current configuration option in `homelab-panel/config.py`, `homelab-panel/devices.py`, and `homelab-control/config.json`.
+- Documented the complete current command surface: Python entry points, shell scripts, MQTT command payloads, Flask routes, and systemd usage.
+- Explicitly documented that version 0.0.1 has no supported CLI flags or argument parser.
+- Added `commented_code_map.md` with function/command/file purpose and rationale.
+- Added explicit configuration examples:
+  - `homelab-control/config.example.json`
+  - `homelab-panel/config.example.py`
+  - `homelab-panel/devices.example.py`
+- Added `VERSION` containing `0.0.1`.
+
+### Clean-package changes
+
+- Removed the uploaded `homelab-panel/__pycache__/` directory and its `.pyc` files from the release package.
+- Removed historical machine runtime data from `homelab-control/logs/commands.log` and `homelab-control/state/*` in the release package.
+- Preserved the empty `logs/` and `state/` directories because the runtime uses those locations and creates their contents as needed.
+
+### Validation performed for this release
+
+- Full source/config/template/service inventory reviewed before modification.
+- Python source compile checks performed without writing bytecode into the project tree.
+- Shell scripts checked with `bash -n`.
+- JSON configuration/example files parsed as JSON.
+- Python config/example files syntax-checked.
+- Release ZIP checked for forbidden cache/bytecode files.
+- Final release manifest compared with the uploaded baseline so removals and additions are accounted for.
+
+Any environment-dependent checks that could not be safely executed are reported with the delivered release rather than being represented as tested.

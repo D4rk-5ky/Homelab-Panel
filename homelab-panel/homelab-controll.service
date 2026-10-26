@@ -8,7 +8,7 @@ Type=simple
 User=iamrpizw
 Group=iamrpizw
 WorkingDirectory=/home/darkyere/Scripts/homelab-controll
-# app.py starts one Waitress process with four request threads.
+# app.py starts one Waitress process; WEB_SERVER_CONFIG defaults to two request threads.
 # For a venv, replace /usr/bin/python3 with the full path to .venv/bin/python.
 ExecStart=/usr/bin/python3 /home/darkyere/Scripts/homelab-controll/app.py
 Restart=on-failure

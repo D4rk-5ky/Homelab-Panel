@@ -6,6 +6,30 @@
 
 WOL_BROADCAST = "255.255.255.255"
 
+# One process; two request threads are a starting point for the single-core Pi.
+# These optional dictionaries may be omitted from existing active configs.
+# Restart after edits. These are config keys, not app.py command-line flags.
+WEB_SERVER_CONFIG = {
+    "host": "0.0.0.0",       # All IPv4 interfaces; use 127.0.0.1 behind a local proxy.
+    "port": 5000,            # Integer 1..65535; preserve the existing panel URL.
+    "threads": 2,            # Positive integer; increase if waiting commands block polls.
+    "connection_limit": 32,  # Maximum active channels; not the request-thread count.
+    "backlog": 64,           # Pending TCP connections waiting in the OS listen queue.
+    "channel_timeout": 30,   # Inactive connection seconds; not a command/job deadline.
+    "cleanup_interval": 5,   # Seconds between inactive-channel cleanup checks.
+}
+
+# Reuse the decoded panel runtime/jobs/history files in process memory.
+# LRU eviction/bypass never deletes or truncates a state file. Data reloads on
+# replacement, edit, deletion or parse failure. No separate cache service.
+STATE_CACHE_CONFIG = {
+    "enabled": True,         # False bypasses this JSON cache only, for diagnosis.
+    "max_files": 3,          # Positive integer; current app uses three state files.
+    "max_bytes": 2097152,    # Combined source-file byte budget (2 MiB), not Python RAM.
+}
+# Larger files still load normally but aren't retained in this decoded cache.
+# Prepared dashboard/merged-job/HTML caches remain active and have separate bounds.
+
 MQTT_CONFIG = {
     "host": "YOUR.IP.Or.HostName",
     "port": 1883,
